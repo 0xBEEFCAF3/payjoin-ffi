@@ -1,5 +1,8 @@
 use std::sync::Arc;
 
+use payjoin::directory::ShortId;
+use serde::Serialize;
+
 use super::InputPair;
 use crate::bitcoin_ffi::{Network, OutPoint, Script, TxOut};
 use crate::error::PayjoinError;
@@ -44,9 +47,17 @@ impl Receiver {
         directory: String,
         ohttp_keys: Arc<OhttpKeys>,
         expire_after: Option<u64>,
+        persister: Box<dyn Persister>,
     ) -> Result<Self, PayjoinError> {
-        super::Receiver::new(address, network, directory, (*ohttp_keys).clone(), expire_after)
-            .map(Into::into)
+        super::Receiver::new(
+            address,
+            network,
+            directory,
+            (*ohttp_keys).clone(),
+            expire_after,
+            persister,
+        )
+        .map(Into::into)
     }
 
     pub fn extract_req(&self, ohttp_relay: String) -> Result<RequestResponse, PayjoinError> {
@@ -81,6 +92,23 @@ impl Receiver {
     }
 }
 
+impl payjoin::traits::Persister for Box<dyn Persister> {
+    type Key = ShortId;
+    type Error = PayjoinError;
+    fn save<T: Serialize>(&self, key: Self::Key, value: T) -> Result<(), Self::Error> {
+        let value = serde_json::to_vec(&value)?;
+        self.as_ref()
+            .save(key.0.to_vec(), value)
+            .map_err(|e| e.into())
+    }
+}
+
+#[uniffi::export(callback_interface)]
+trait Persister {
+    #[uniffi::method]
+    fn save(&self, key: Vec<u8>, value: Vec<u8>) -> Result<(), PayjoinError>;
+}
+
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct RequestResponse {
     pub request: Request,
@@ -92,7 +120,7 @@ pub trait CanBroadcast {
     fn callback(&self, tx: Vec<u8>) -> Result<bool, PayjoinError>;
 }
 
-/// The sender’s original PSBT and optional parameters
+/// The sender's original PSBT and optional parameters
 ///
 /// This type is used to proces the request. It is returned by UncheckedProposal::from_request().
 ///
@@ -108,16 +136,16 @@ impl From<super::UncheckedProposal> for UncheckedProposal {
 
 #[uniffi::export]
 impl UncheckedProposal {
-    /// The Sender’s Original PSBT
+    /// The Sender's Original PSBT
     pub fn extract_tx_to_schedule_broadcast(&self) -> Vec<u8> {
         self.0.extract_tx_to_schedule_broadcast()
     }
 
     /// Call after checking that the Original PSBT can be broadcast.
     ///
-    /// Receiver MUST check that the Original PSBT from the sender can be broadcast, i.e. testmempoolaccept bitcoind rpc returns { “allowed”: true,.. } for get_transaction_to_check_broadcast() before calling this method.
+    /// Receiver MUST check that the Original PSBT from the sender can be broadcast, i.e. testmempoolaccept bitcoind rpc returns { "allowed": true,.. } for get_transaction_to_check_broadcast() before calling this method.
     ///
-    /// Do this check if you generate bitcoin uri to receive Payjoin on sender request without manual human approval, like a payment processor. Such so called “non-interactive” receivers are otherwise vulnerable to probing attacks. If a sender can make requests at will, they can learn which bitcoin the receiver owns at no cost. Broadcasting the Original PSBT after some time in the failure case makes incurs sender cost and prevents probing.
+    /// Do this check if you generate bitcoin uri to receive Payjoin on sender request without manual human approval, like a payment processor. Such so called "non-interactive" receivers are otherwise vulnerable to probing attacks. If a sender can make requests at will, they can learn which bitcoin the receiver owns at no cost. Broadcasting the Original PSBT after some time in the failure case makes incurs sender cost and prevents probing.
     ///
     /// Call this after checking downstream.
     pub fn check_broadcast_suitability(

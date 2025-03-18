@@ -3,6 +3,8 @@ use std::time::Duration;
 
 use payjoin::bitcoin::psbt::Psbt;
 use payjoin::bitcoin::FeeRate;
+use payjoin::directory::ShortId;
+use payjoin::traits::Persister;
 
 use crate::bitcoin_ffi::{Network, OutPoint, Script, TxOut};
 use crate::error::PayjoinError;
@@ -42,13 +44,16 @@ impl Receiver {
     ///
     /// # References
     /// - [BIP 77: Payjoin Version 2: Serverless Payjoin](https://github.com/bitcoin/bips/pull/1483)
-    pub fn new(
+    pub fn new<P: Persister>(
         address: String,
         network: Network,
         directory: String,
         ohttp_keys: OhttpKeys,
         expire_after: Option<u64>,
-    ) -> Result<Self, PayjoinError> {
+        persister: P,
+    ) -> Result<Self, PayjoinError> 
+        where P::Key: From<ShortId>,
+    {
         let address =
             payjoin::bitcoin::Address::from_str(address.as_str())?.require_network(network)?;
         payjoin::receive::v2::Receiver::new(
@@ -56,6 +61,7 @@ impl Receiver {
             directory,
             ohttp_keys.into(),
             expire_after.map(Duration::from_secs),
+            persister,
         )
         .map(|r| r.into())
         .map_err(|e| e.into())
