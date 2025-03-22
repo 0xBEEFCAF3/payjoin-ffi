@@ -6,8 +6,7 @@ LIBNAME=payjoin_ffi.dll
 WINDOWS_TARGET=x86_64-pc-windows-gnu
 echo "Generating payjoin_ffi.py..."
 cd ../
-cargo run --features uniffi --bin uniffi-bindgen generate src/payjoin_ffi.udl --language python --out-dir python/src/payjoin/
-
+cargo run --features uniffi --bin uniffi-bindgen generate --library target/release/$LIBNAME --language python --out-dir python/src/payjoin/
 
 echo "Generating native binaries..."
 rustup target add $WINDOWS_TARGET
