@@ -103,10 +103,7 @@ impl From<super::NewSender> for NewSender {
 
 #[uniffi::export]
 impl NewSender {
-    pub fn persist(
-        &self,
-        persister: Arc<dyn SenderPersister>,
-    ) -> Result<SenderToken, ImplementationError> {
+    pub fn persist(&self, persister: Arc<dyn SenderPersister>) -> Result<(), ImplementationError> {
         let mut adapter = CallbackPersisterAdapter::new(persister);
         self.0.persist(&mut adapter)
     }
@@ -129,17 +126,6 @@ impl From<Sender> for super::Sender {
 
 #[uniffi::export]
 impl Sender {
-    #[uniffi::constructor]
-    pub fn load(
-        token: Arc<SenderToken>,
-        persister: Arc<dyn SenderPersister>,
-    ) -> Result<Self, ImplementationError> {
-        Ok(super::Sender::from(
-            (*persister.load(token).map_err(|e| ImplementationError::from(e.to_string()))?).clone(),
-        )
-        .into())
-    }
-
     pub fn extract_v1(&self) -> RequestV1Context {
         let (req, ctx) = self.0.extract_v1();
         RequestV1Context { request: req, context: Arc::new(ctx.into()) }
@@ -168,10 +154,6 @@ impl Sender {
     #[uniffi::constructor]
     pub fn from_json(json: &str) -> Result<Self, SerdeJsonError> {
         super::Sender::from_json(json).map(Into::into)
-    }
-
-    pub fn key(&self) -> SenderToken {
-        self.0.key().into()
     }
 }
 
@@ -269,11 +251,13 @@ impl V2GetContext {
 
 #[uniffi::export(with_foreign)]
 pub trait SenderPersister: Send + Sync {
-    fn save(&self, sender: Arc<Sender>) -> Result<Arc<SenderToken>, ForeignError>;
-    fn load(&self, token: Arc<SenderToken>) -> Result<Arc<Sender>, ForeignError>;
+    fn save(&self, event: UniSenderSessionEvent) -> Result<(), ForeignError>;
+    fn load(&self) -> Result<Vec<UniSenderSessionEvent>, ForeignError>;
+    fn close(&self) -> Result<(), ForeignError>;
 }
 
 // The adapter to use the save and load callbacks
+#[derive(Clone)]
 struct CallbackPersisterAdapter {
     callback_persister: Arc<dyn SenderPersister>,
 }
@@ -284,40 +268,55 @@ impl CallbackPersisterAdapter {
     }
 }
 
+#[derive(Clone, uniffi::Enum)]
+pub enum UniSenderSessionEvent {
+    Created { context: String },
+}
+
+impl From<UniSenderSessionEvent> for super::SenderSessionEvent {
+    fn from(value: UniSenderSessionEvent) -> Self {
+        todo!("Implement conversion from UniSenderSessionEvent back to SenderSessionEvent")
+    }
+}
+
+impl From<super::SenderSessionEvent> for UniSenderSessionEvent {
+    fn from(value: super::SenderSessionEvent) -> Self {
+        todo!("Implement conversion from SenderSessionEvent back to UniSenderSessionEvent")
+    }
+}
+
 // Implement the Persister trait for the adapter
-impl payjoin::persist::Persister<payjoin::send::v2::Sender> for CallbackPersisterAdapter {
-    type Token = SenderToken; // Define the token type
+impl payjoin::persist::PersistedSession for CallbackPersisterAdapter {
+    type SessionEvent = super::SenderSessionEvent;
     type Error = ForeignError; // Define the error type
 
-    fn save(&mut self, sender: payjoin::send::v2::Sender) -> Result<Self::Token, Self::Error> {
-        let sender = Sender(super::Sender::from(sender));
-        self.callback_persister.save(sender.into()).map(|token| (*token).clone())
+    fn save(&self, event: Self::SessionEvent) -> Result<(), Self::Error> {
+        self.callback_persister.save(event.into())
     }
 
-    fn load(&self, token: Self::Token) -> Result<payjoin::send::v2::Sender, Self::Error> {
-        // Use the callback to load the sender
-        self.callback_persister.load(token.into()).map(|sender| (*sender).clone().0 .0)
+    fn close(&self) -> Result<(), Self::Error> {
+        self.callback_persister.close()
     }
-}
 
-#[derive(Clone, Debug, uniffi::Object)]
-#[uniffi::export(Display)]
-pub struct SenderToken(#[allow(dead_code)] payjoin::send::v2::SenderToken);
-
-impl std::fmt::Display for SenderToken {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+    fn load(&self) -> Result<Box<dyn Iterator<Item = Self::SessionEvent>>, Self::Error> {
+        // self.callback_persister.load()
+        todo!(
+            "Implement conversion from Vec<SenderSessionEvent> back to Vec<UniSenderSessionEvent>"
+        )
     }
 }
 
-impl From<payjoin::send::v2::Sender> for SenderToken {
-    fn from(value: payjoin::send::v2::Sender) -> Self {
-        SenderToken(value.into())
-    }
-}
+// #[derive(Clone, Debug, uniffi::Object)]
+// pub struct SenderToken(#[allow(dead_code)] payjoin::send::v2::SenderToken);
 
-impl From<payjoin::send::v2::SenderToken> for SenderToken {
-    fn from(value: payjoin::send::v2::SenderToken) -> Self {
-        SenderToken(value)
-    }
-}
+// impl From<payjoin::send::v2::Sender> for SenderToken {
+//     fn from(value: payjoin::send::v2::Sender) -> Self {
+//         SenderToken(value.into())
+//     }
+// }
+
+// impl From<payjoin::send::v2::SenderToken> for SenderToken {
+//     fn from(value: payjoin::send::v2::SenderToken) -> Self {
+//         SenderToken(value)
+//     }
+// }

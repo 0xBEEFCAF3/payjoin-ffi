@@ -3,8 +3,8 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 pub use error::{BuildSenderError, CreateRequestError, EncapsulationError, ResponseError};
-use payjoin::persist::{Persister, Value};
-use payjoin::send::v2::SenderToken;
+use payjoin::persist::{PersistedSession, Persister, Value};
+use serde::{Deserialize, Serialize};
 
 pub use crate::error::SerdeJsonError;
 use crate::ohttp::ClientResponse;
@@ -15,6 +15,30 @@ use crate::uri::{PjUri, Url};
 pub mod error;
 #[cfg(feature = "uniffi")]
 pub mod uni;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SenderSessionEvent {
+    Created(String),
+    SessionInvalid(String),
+}
+
+impl payjoin::persist::Event for SenderSessionEvent {
+    fn session_invalid(error: &impl payjoin::persist::PersistableError) -> Self {
+        Self::SessionInvalid(error.to_string())
+    }
+}
+
+impl From<SenderSessionEvent> for payjoin::send::v2::SenderSessionEvent {
+    fn from(value: SenderSessionEvent) -> Self {
+        todo!("Implement conversion from SenderSessionEvent back to payjoin::send::v2::SenderSessionEvent")
+    }
+}
+
+impl From<payjoin::send::v2::SenderSessionEvent> for SenderSessionEvent {
+    fn from(value: payjoin::send::v2::SenderSessionEvent) -> Self {
+        todo!("Implement conversion from payjoin::send::v2::SenderSessionEvent back to SenderSessionEvent")
+    }
+}
 
 ///Builder for sender-side payjoin parameters
 ///
@@ -119,10 +143,11 @@ impl From<payjoin::send::v2::NewSender> for NewSender {
 }
 
 impl NewSender {
-    pub fn persist<P: Persister<payjoin::send::v2::Sender>>(
-        &self,
-        persister: &mut P,
-    ) -> Result<P::Token, ImplementationError> {
+    pub fn persist<P>(&self, persister: &mut P) -> Result<(), ImplementationError>
+    where
+        P: PersistedSession + Clone,
+        P::SessionEvent: From<payjoin::send::v2::SenderSessionEvent>,
+    {
         self.0.persist(persister).map_err(ImplementationError::from)
     }
 }
@@ -174,10 +199,6 @@ impl Sender {
 
     pub fn from_json(json: &str) -> Result<Self, SerdeJsonError> {
         serde_json::from_str::<payjoin::send::v2::Sender>(json).map_err(Into::into).map(Into::into)
-    }
-
-    pub fn key(&self) -> SenderToken {
-        self.0.key()
     }
 }
 
