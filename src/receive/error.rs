@@ -81,6 +81,18 @@ impl From<String> for ImplementationError {
     }
 }
 
+// impl From<receive::ImplementationError> for ImplementationError {
+//     fn from(value: receive::ImplementationError) -> Self {
+//         Self(value)
+//     }
+// }
+
+// impl From<ImplementationError> for receive::ImplementationError {
+//     fn from(value: ImplementationError) -> Self {
+//         value.0
+//     }
+// }
+
 /// Error that may occur during a v2 session typestate change
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]

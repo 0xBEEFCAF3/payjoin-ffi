@@ -547,18 +547,36 @@ pub trait ReceiverPersistedSession: Send + Sync {
 
 #[derive(Clone, uniffi::Enum)]
 pub enum UniReceiverSessionEvent {
-    Created { context: String },
+    Created { inner: Arc<UniReceiverSessionContext> },
 }
 
 impl From<UniReceiverSessionEvent> for super::ReceiverSessionEvent {
     fn from(value: UniReceiverSessionEvent) -> Self {
-        todo!("Implement conversion from UniReceiverSessionEvent back to ReceiverSessionEvent")
+        match value {
+            UniReceiverSessionEvent::Created { inner } => {
+                super::ReceiverSessionEvent::Created((*inner).clone().into())
+            }
+            _ => {
+                todo!(
+                "Implement conversion from UniReceiverSessionEvent back to ReceiverSessionEvent"
+            )
+            }
+        }
     }
 }
 
 impl From<super::ReceiverSessionEvent> for UniReceiverSessionEvent {
     fn from(value: super::ReceiverSessionEvent) -> Self {
-        todo!("Implement conversion from ReceiverSessionEvent back to UniReceiverSessionEvent")
+        match value {
+            super::ReceiverSessionEvent::Created(context) => {
+                UniReceiverSessionEvent::Created { inner: Arc::new(context.into()) }
+            }
+            _ => {
+                todo!(
+                "Implement conversion from UniReceiverSessionEvent back to ReceiverSessionEvent"
+            )
+            }
+        }
     }
 }
 
@@ -583,8 +601,8 @@ impl payjoin::persist::PersistedSession for CallbackPersisterAdapter {
     }
 
     fn load(&self) -> Result<Box<dyn Iterator<Item = Self::SessionEvent>>, Self::Error> {
-        // self.callback_persister.load().map(|iter| iter)
-        todo!("Implement conversion from UniReceiverSessionEvent back to ReceiverSessionEvent")
+        let res = self.callback_persister.load()?;
+        Ok(Box::new(res.into_iter().map(|event| event.into())))
     }
 
     fn close(&self) -> Result<(), Self::Error> {
