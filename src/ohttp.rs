@@ -17,11 +17,6 @@ pub mod error {
             OhttpError { message: value }
         }
     }
-    impl From<String> for OhttpError {
-        fn from(value: String) -> Self {
-            OhttpError { message: value }
-        }
-    }
 }
 
 impl From<payjoin::OhttpKeys> for OhttpKeys {

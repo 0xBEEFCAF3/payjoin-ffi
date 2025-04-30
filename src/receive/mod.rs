@@ -281,15 +281,16 @@ impl From<payjoin::receive::v2::ReceiverWithContext> for ReceiverWithContext {
 }
 
 impl ReceiverWithContext {
-    pub fn extract_req(&mut self, ohttp_relay: String) -> Result<(Request, ClientResponse), Error> {
+    pub fn extract_req(&self, ohttp_relay: String) -> Result<(Request, ClientResponse), Error> {
         self.0
+            .clone()
             .extract_req(ohttp_relay)
             .map(|(req, ctx)| (req.into(), ctx.into()))
             .map_err(Into::into)
     }
 
     pub fn process_res<P>(
-        &mut self,
+        &self,
         body: &[u8],
         context: &ClientResponse,
         persister: P,
@@ -299,9 +300,14 @@ impl ReceiverWithContext {
         P::SessionEvent: From<payjoin::receive::v2::ReceiverSessionEvent>,
     {
         self.0
+            .clone()
             .process_res(body, context.into(), persister)
             .map(|e| e.map(|o| o.into()))
             .map_err(Into::into)
+    }
+
+    pub fn pj_uri(&self) -> crate::PjUri {
+        self.0.pj_uri().into()
     }
 }
 

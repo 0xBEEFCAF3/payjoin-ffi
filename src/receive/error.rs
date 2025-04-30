@@ -18,6 +18,16 @@ pub enum Error {
     Unexpected,
 }
 
+// remove this was just used during debugging
+#[uniffi::export]
+pub fn error_to_string(error: Error) -> String {
+    match error {
+        Error::ReplyToSender(e) => e.to_string(),
+        Error::V2(e) => e.to_string(),
+        Error::Unexpected => "An unexpected error occurred".to_string(),
+    }
+}
+
 impl From<receive::Error> for Error {
     fn from(value: receive::Error) -> Self {
         match value {
@@ -98,6 +108,13 @@ impl From<String> for ImplementationError {
 #[error(transparent)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct SessionError(#[from] receive::v2::SessionError);
+
+#[uniffi::export]
+impl SessionError {
+    pub fn as_string(&self) -> String {
+        self.0.to_string()
+    }
+}
 
 /// Error that may occur when output substitution fails.
 #[derive(Debug, thiserror::Error)]

@@ -107,6 +107,10 @@ impl NewSender {
         let mut adapter = CallbackPersisterAdapter::new(persister);
         self.0.persist(&mut adapter)
     }
+
+    pub fn build(&self) -> Sender {
+        self.0.build().into()
+    }
 }
 
 #[derive(Clone, uniffi::Object)]

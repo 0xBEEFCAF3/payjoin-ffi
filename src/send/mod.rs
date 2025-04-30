@@ -150,6 +150,10 @@ impl NewSender {
     {
         self.0.persist(persister).map_err(ImplementationError::from)
     }
+
+    pub fn build(&self) -> Sender {
+        self.0.build().into()
+    }
 }
 
 #[derive(Clone)]

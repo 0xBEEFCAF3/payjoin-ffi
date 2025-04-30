@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use super::InputPair;
 use crate::bitcoin_ffi::{Address, OutPoint, Script, TxOut};
@@ -144,11 +145,39 @@ use crate::{ClientResponse, OhttpKeys, OutputSubstitution, Request};
 //     }
 // }
 #[derive(uniffi::Object)]
-pub struct UninitializedReceiver(super::UninitializedReceiver);
+pub struct UninitializedReceiver(pub(crate) super::UninitializedReceiver);
 
 impl From<super::UninitializedReceiver> for UninitializedReceiver {
     fn from(value: super::UninitializedReceiver) -> Self {
         Self(value)
+    }
+}
+
+#[uniffi::export]
+impl UninitializedReceiver {
+    #[uniffi::constructor]
+    pub fn new() -> Self {
+        // TODO: should just replace with default impls
+        Self(super::UninitializedReceiver(payjoin::receive::v2::UninitializedReceiver {}))
+    }
+
+    pub fn create_session(
+        &self,
+        address: Arc<Address>,
+        directory: String,
+        ohttp_keys: Arc<OhttpKeys>,
+        expire_after: Option<u64>,
+        persister: Arc<dyn ReceiverPersistedSession>,
+    ) -> Result<ReceiverWithContext, IntoUrlError> {
+        let adapter = CallbackPersisterAdapter::new(persister);
+        let receiver = super::UninitializedReceiver::create_session(
+            (*address).clone(),
+            directory,
+            (*ohttp_keys).clone(),
+            expire_after,
+            adapter,
+        )?;
+        Ok(receiver.into())
     }
 }
 
@@ -158,6 +187,35 @@ pub struct ReceiverWithContext(super::ReceiverWithContext);
 impl From<super::ReceiverWithContext> for ReceiverWithContext {
     fn from(value: super::ReceiverWithContext) -> Self {
         Self(value)
+    }
+}
+
+// impl From<super::ReceiverWithContext> for Arc<ReceiverWithContext> {
+//     fn from(value: super::ReceiverWithContext) -> Self {
+//         Arc::new(ReceiverWithContext(value))
+//     }
+// }
+
+#[uniffi::export]
+impl ReceiverWithContext {
+    pub fn extract_req(&self, ohttp_relay: String) -> Result<RequestResponse, Error> {
+        self.0
+            .extract_req(ohttp_relay)
+            .map(|(request, ctx)| RequestResponse { request, client_response: Arc::new(ctx) })
+    }
+
+    pub fn process_res(
+        &self,
+        body: &[u8],
+        context: Arc<ClientResponse>,
+        persister: Arc<dyn ReceiverPersistedSession>,
+    ) -> Result<Option<Arc<UncheckedProposal>>, Error> {
+        let adapter = CallbackPersisterAdapter::new(persister);
+        self.0.process_res(body, &context, adapter).map(|e| e.map(|x| Arc::new(x.into())))
+    }
+
+    pub fn pj_uri(&self) -> crate::PjUri {
+        self.0.pj_uri().into()
     }
 }
 
@@ -545,9 +603,109 @@ pub trait ReceiverPersistedSession: Send + Sync {
     fn close(&self) -> Result<(), ForeignError>;
 }
 
+#[derive(Clone, uniffi::Object)]
+pub struct UniReceiverSessionContext(payjoin::receive::v2::SessionContext);
+
+#[uniffi::export]
+impl UniReceiverSessionContext {
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(&self.0).unwrap()
+    }
+
+    #[uniffi::constructor]
+    pub fn from_json(json: String) -> Result<Self, UniReceiverError> {
+        let context: payjoin::receive::v2::SessionContext = serde_json::from_str(&json).unwrap();
+        Ok(Self(context))
+    }
+}
+
+impl From<payjoin::receive::v2::SessionContext> for UniReceiverSessionContext {
+    fn from(value: payjoin::receive::v2::SessionContext) -> Self {
+        Self(value)
+    }
+}
+
+impl From<UniReceiverSessionContext> for payjoin::receive::v2::SessionContext {
+    fn from(value: UniReceiverSessionContext) -> Self {
+        value.0
+    }
+}
+
+#[derive(Clone, uniffi::Object)]
+pub struct UniUncheckedProposal(payjoin::receive::v1::UncheckedProposal);
+
+#[uniffi::export]
+impl UniUncheckedProposal {
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(&self.0).unwrap()
+    }
+
+    #[uniffi::constructor]
+    pub fn from_json(json: String) -> Result<Self, UniReceiverError> {
+        let proposal: payjoin::receive::v1::UncheckedProposal =
+            serde_json::from_str(&json).unwrap();
+        Ok(Self(proposal))
+    }
+}
+
+impl From<payjoin::receive::v1::UncheckedProposal> for UniUncheckedProposal {
+    fn from(value: payjoin::receive::v1::UncheckedProposal) -> Self {
+        Self(value)
+    }
+}
+
+impl From<UniUncheckedProposal> for payjoin::receive::v1::UncheckedProposal {
+    fn from(value: UniUncheckedProposal) -> Self {
+        value.0
+    }
+}
+
+#[derive(Clone, Debug, thiserror::Error, uniffi::Error)]
+pub enum UniReceiverError {
+    #[error("Some error")]
+    SomeError(String),
+}
+
 #[derive(Clone, uniffi::Enum)]
 pub enum UniReceiverSessionEvent {
     Created { inner: Arc<UniReceiverSessionContext> },
+    UncheckedProposal { inner: Arc<UniUncheckedProposal> },
+}
+
+#[uniffi::export]
+fn to_json(event: UniReceiverSessionEvent) -> String {
+    event.to_json()
+}
+
+#[uniffi::export]
+fn from_json(json: String) -> Result<UniReceiverSessionEvent, UniReceiverError> {
+    UniReceiverSessionEvent::from_json(json)
+}
+
+impl UniReceiverSessionEvent {
+    pub fn to_json(&self) -> String {
+        match self {
+            UniReceiverSessionEvent::Created { inner } => {
+                let inner = payjoin::receive::v2::SessionContext::from(inner.0.clone());
+                serde_json::to_string(&payjoin::receive::v2::ReceiverSessionEvent::Created(inner))
+                    .unwrap()
+            }
+            UniReceiverSessionEvent::UncheckedProposal { inner } => {
+                let inner = payjoin::receive::v1::UncheckedProposal::from(inner.0.clone());
+                serde_json::to_string(
+                    &payjoin::receive::v2::ReceiverSessionEvent::UncheckedProposal(inner),
+                )
+                .unwrap()
+            }
+        }
+    }
+
+    pub fn from_json(json: String) -> Result<Self, UniReceiverError> {
+        let event: payjoin::receive::v2::ReceiverSessionEvent =
+            serde_json::from_str(&json).unwrap();
+        let event = super::ReceiverSessionEvent::from(event);
+        Ok(event.into())
+    }
 }
 
 impl From<UniReceiverSessionEvent> for super::ReceiverSessionEvent {
@@ -555,6 +713,9 @@ impl From<UniReceiverSessionEvent> for super::ReceiverSessionEvent {
         match value {
             UniReceiverSessionEvent::Created { inner } => {
                 super::ReceiverSessionEvent::Created((*inner).clone().into())
+            }
+            UniReceiverSessionEvent::UncheckedProposal { inner } => {
+                super::ReceiverSessionEvent::UncheckedProposal((*inner).clone().into())
             }
             _ => {
                 todo!(
@@ -570,6 +731,9 @@ impl From<super::ReceiverSessionEvent> for UniReceiverSessionEvent {
         match value {
             super::ReceiverSessionEvent::Created(context) => {
                 UniReceiverSessionEvent::Created { inner: Arc::new(context.into()) }
+            }
+            super::ReceiverSessionEvent::UncheckedProposal(proposal) => {
+                UniReceiverSessionEvent::UncheckedProposal { inner: Arc::new(proposal.into()) }
             }
             _ => {
                 todo!(
