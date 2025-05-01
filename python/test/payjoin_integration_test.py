@@ -56,40 +56,55 @@ rpc_password = os.environ.get("RPC_PASSWORD", "123")
 rpc_host = os.environ.get("RPC_HOST", "localhost")
 rpc_port = os.environ.get("RPC_PORT", "18443")
 #ensure this is where your access cookie is located
-rpc_data_dir = os.environ.get("RPC_DATA_DIR", "~/.bitcoin/regtest") 
-cookie_path = os.path.expanduser(os.path.join(rpc_data_dir, ".cookie"))
-rpc_user, rpc_password = get_rpc_credentials_from_cookie(cookie_path)
+# rpc_data_dir = os.environ.get("RPC_DATA_DIR", "~/.bitcoin/regtest") 
+# cookie_path = os.path.expanduser(os.path.join(rpc_data_dir, ".cookie"))
+# rpc_user, rpc_password = get_rpc_credentials_from_cookie(cookie_path)
 
-class InMemoryReceiverPersister(ReceiverPersister):
-    def __init__(self):
-        super().__init__()
-        self.receivers = {}
+# class InMemoryReceiverPersister(payjoin_ffi.ReceiverPersister):
+#     def __init__(self):
+#         super().__init__()
+#         self.receivers = {}
 
-    def save(self, receiver: Receiver) -> ReceiverToken:
-        self.receivers[str(receiver.key())] = receiver.to_json()
+#     def save(self, receiver: Receiver) -> ReceiverToken:
+#         self.receivers[receiver.key().as_string()] = receiver.to_json()
 
-        return receiver.key()
+#         return receiver.key()
 
-    def load(self, token: ReceiverToken) -> Receiver:
-        token = str(token)
-        if token not in self.receivers.keys():
-            raise ValueError(f"Token not found: {token}")
-        return Receiver.from_json(self.receivers[token])
+#     def load(self, token: ReceiverToken) -> Receiver:
+#         token = token.as_string()
+#         if token not in self.receivers.keys():
+#             raise ValueError(f"Token not found: {token}")
+#         return Receiver.from_json(self.receivers[token])
 
-class InMemorySenderPersister(SenderPersister):
-    def __init__(self):
-        super().__init__()
-        self.senders = {}
+# class InMemorySenderPersister(payjoin_ffi.SenderPersister):
+#     def __init__(self):
+#         super().__init__()
+#         self.senders = {}
 
-    def save(self, sender: Sender) -> SenderToken:
-        self.senders[str(sender.key())] = sender.to_json()
-        return sender.key()
+#     def save(self, sender: Sender) -> SenderToken:
+#         self.senders[sender.key().as_string()] = sender.to_json()
+#         return sender.key()
 
-    def load(self, token: SenderToken) -> Sender:
-        token = str(token)
-        if token not in self.senders.keys():
-            raise ValueError(f"Token not found: {token}")
-        return Sender.from_json(self.senders[token])
+#     def load(self, token: SenderToken) -> Sender:
+#         token = token.as_string()
+#         if token not in self.senders.keys():
+#             raise ValueError(f"Token not found: {token}")
+#         return Sender.from_json(self.senders[token])
+class ReceieverSessionEventLog(ReceiverPersistedSession):
+    def __init__(self, id):
+        self.id = id
+        self.events = []
+        self.closed = False
+
+    def save(self, event: UniReceiverSessionEvent):
+        self.events.append(to_json(event))
+
+    def load(self):
+        return [from_json(event) for event in self.events]
+
+    def close(self):
+        self.closed = True
+
 
 class TestPayjoin(unittest.IsolatedAsyncioTestCase):
     @classmethod
@@ -118,32 +133,32 @@ class TestPayjoin(unittest.IsolatedAsyncioTestCase):
             services.wait_for_services_ready()
             directory = services.directory_url()
             ohttp_keys = services.fetch_ohttp_keys()
+            ohttp_relay = services.ohttp_relay_url()
 
             # **********************
             # Inside the Receiver:
             expiry: Optional[int] = None
-            new_receiver = NewReceiver(receiver_address, directory.as_string(), ohttp_keys, expiry)
-            persister = InMemoryReceiverPersister()
-            token = new_receiver.persist(persister)
-            session: Receiver = Receiver.load(token, persister)
-            print(f"session: {session.to_json()}")
+            # new_receiver = NewReceiver(receiver_address, directory.as_string(), ohttp_keys, expiry)
+            recv_persister = ReceieverSessionEventLog(1)
+            receiver = UninitializedReceiver().create_session(receiver_address, directory.as_string(), ohttp_keys, None, recv_persister)
+            
+            pj_uri = receiver.pj_uri()
+            print(f"pj_uri: {pj_uri.as_string()}")
             # Poll receive request
-            ohttp_relay = services.ohttp_relay_url()
-            request: RequestResponse = session.extract_req(ohttp_relay.as_string())
+            request: RequestResponse = receiver.extract_req(ohttp_relay.as_string())
             agent = httpx.AsyncClient()
             response = await agent.post(
                 url=request.request.url.as_string(),
                 headers={"Content-Type": request.request.content_type},
                 content=request.request.body
             )
-            response_body = session.process_res(response.content, request.client_response)
+            response_body = receiver.process_res(response.content, request.client_response, recv_persister)
             # No proposal yet since sender has not responded
             self.assertIsNone(response_body)
             
             # **********************
             # Inside the Sender:
             # Create a funded PSBT (not broadcasted) to address with amount given in the pj_uri
-            pj_uri = session.pj_uri()
             outputs = {}
             outputs[pj_uri.address()] = 0.0001
             psbt = self.sender._call(
@@ -171,7 +186,7 @@ class TestPayjoin(unittest.IsolatedAsyncioTestCase):
             # Inside the Receiver:
 
             # GET fallback psbt
-            request: RequestResponse = session.extract_req(ohttp_relay.as_string())
+            request: RequestResponse = receiver.extract_req(ohttp_relay.as_string())
             response = await agent.post(
                 url=request.request.url.as_string(),
                 headers={"Content-Type": request.request.content_type},
@@ -251,8 +266,8 @@ def get_inputs(rpc_connection: Proxy) -> list[InputPair]:
     return inputs
 
 class MempoolAcceptanceCallback(CanBroadcast):
-    def __init__(self, connection: Proxy):
-        self.connection = connection
+    def __init__(self):
+        pass
 
     def callback(self, tx):
           try:

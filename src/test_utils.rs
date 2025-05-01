@@ -116,7 +116,8 @@ impl TestServices {
     pub fn fetch_ohttp_keys(&self) -> Result<crate::OhttpKeys, crate::io::IoError> {
         let runtime = RUNTIME.lock().unwrap();
         runtime.block_on(async {
-            self.0.lock().await.fetch_ohttp_keys().await.map_err(Into::into).map(Into::into)
+            let res = self.0.lock().await.fetch_ohttp_keys().await.unwrap();
+            Ok(res.into())
         })
     }
 }

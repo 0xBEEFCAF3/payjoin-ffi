@@ -267,11 +267,15 @@ impl UncheckedProposal {
         let adapter = CallbackPersisterAdapter::new(persister);
         self.0
             .clone()
-            .check_broadcast_suitability(min_fee_rate, |transaction| {
-                can_broadcast
-                    .callback(transaction.to_vec())
-                    .map_err(|e| ImplementationError::from(e.to_string()))
-            }, adapter)
+            .check_broadcast_suitability(
+                min_fee_rate,
+                |transaction| {
+                    can_broadcast
+                        .callback(transaction.to_vec())
+                        .map_err(|e| ImplementationError::from(e.to_string()))
+                },
+                adapter,
+            )
             .map(|e| Arc::new(e.into()))
     }
 

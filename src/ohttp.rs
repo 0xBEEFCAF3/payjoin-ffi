@@ -19,6 +19,10 @@ pub mod error {
     }
 }
 
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
+#[derive(Debug, Clone)]
+pub struct OhttpKeys(payjoin::OhttpKeys);
+
 impl From<payjoin::OhttpKeys> for OhttpKeys {
     fn from(value: payjoin::OhttpKeys) -> Self {
         Self(value)
@@ -29,9 +33,6 @@ impl From<OhttpKeys> for payjoin::OhttpKeys {
         value.0
     }
 }
-#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
-#[derive(Debug, Clone)]
-pub struct OhttpKeys(payjoin::OhttpKeys);
 
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 impl OhttpKeys {
