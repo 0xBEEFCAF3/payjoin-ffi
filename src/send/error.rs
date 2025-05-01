@@ -47,6 +47,12 @@ pub struct EncapsulationError(#[from] send::v2::EncapsulationError);
 #[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct ValidationError(#[from] send::ValidationError);
 
+#[cfg_attr(feature = "uniffi", uniffi::export)]
+impl ValidationError {
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(&self.to_string()).unwrap()
+    }
+}
 /// Represent an error returned by Payjoin receiver.
 #[derive(Debug, thiserror::Error)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Error))]
@@ -71,6 +77,14 @@ pub enum ResponseError {
     /// [`BIP78::ReceiverWellKnownError`]: https://github.com/bitcoin/bips/blob/master/bip-0078.mediawiki#user-content-Receivers_well_known_errors
     #[error("An unrecognized error occurred")]
     Unrecognized { error_code: String, msg: String },
+}
+
+#[cfg_attr(feature = "uniffi", uniffi::export)]
+pub fn response_error_to_json(err: &ResponseError) -> Option<String> {
+    match err {
+        ResponseError::Validation(v) => Some(v.to_json()),
+        _ => None,
+    }
 }
 
 impl From<send::ResponseError> for ResponseError {
