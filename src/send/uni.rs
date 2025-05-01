@@ -295,11 +295,11 @@ impl payjoin::persist::PersistedSession for CallbackPersisterAdapter {
     type Error = ForeignError; // Define the error type
 
     fn save(&self, event: Self::SessionEvent) -> Result<(), Self::Error> {
-        self.callback_persister.save(event.into())
+        todo!("Implement save")
     }
 
     fn close(&self) -> Result<(), Self::Error> {
-        self.callback_persister.close()
+        todo!("Implement close")
     }
 
     fn load(&self) -> Result<Box<dyn Iterator<Item = Self::SessionEvent>>, Self::Error> {
