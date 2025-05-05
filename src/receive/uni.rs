@@ -1,7 +1,8 @@
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::InputPair;
+use super::{InputPair, ReceiverState};
 use crate::bitcoin_ffi::{Address, OutPoint, Script, TxOut};
 use crate::error::ForeignError;
 pub use crate::receive::{
@@ -11,139 +12,54 @@ pub use crate::receive::{
 use crate::uri::error::IntoUrlError;
 use crate::{ClientResponse, OhttpKeys, OutputSubstitution, Request};
 
-// #[derive(Debug, uniffi::Object)]
-// pub struct NewReceiver(pub super::NewReceiver);
+macro_rules! impl_json_methods {
+    ($type:ty) => {
+        #[uniffi::export]
+        impl $type {
+            pub fn to_json(&self) -> String {
+                serde_json::to_string(&self.0).unwrap()
+            }
 
-// impl From<NewReceiver> for super::NewReceiver {
-//     fn from(value: NewReceiver) -> Self {
-//         value.0
-//     }
-// }
+            #[uniffi::constructor]
+            pub fn from_json(json: String) -> Result<Self, UniReceiverError> {
+                let inner = serde_json::from_str(&json).unwrap();
+                Ok(Self(inner))
+            }
+        }
+    };
+}
 
-// impl From<super::NewReceiver> for NewReceiver {
-//     fn from(value: super::NewReceiver) -> Self {
-//         Self(value)
-//     }
-// }
+macro_rules! impl_from_super_methods {
+    ($uni_type:ty, $inner_type:ty) => {
+        impl From<$inner_type> for $uni_type {
+            fn from(value: $inner_type) -> Self {
+                Self(value)
+            }
+        }
 
-// #[uniffi::export]
-// impl NewReceiver {
-//     /// Creates a new [`NewReceiver`] with the provided parameters.
-//     ///
-//     /// # Parameters
-//     /// - `address`: The Bitcoin address for the payjoin session.
-//     /// - `directory`: The URL of the store-and-forward payjoin directory.
-//     /// - `ohttp_keys`: The OHTTP keys used for encrypting and decrypting HTTP requests and responses.
-//     /// - `expire_after`: The duration after which the session expires.
-//     ///
-//     /// # Returns
-//     /// A new instance of [`NewReceiver`].
-//     ///
-//     /// # References
-//     /// - [BIP 77: Payjoin Version 2: Serverless Payjoin](https://github.com/bitcoin/bips/pull/1483)
-//     #[uniffi::constructor]
-//     pub fn new(
-//         address: Arc<Address>,
-//         directory: String,
-//         ohttp_keys: Arc<OhttpKeys>,
-//         expire_after: Option<u64>,
-//     ) -> Result<Self, IntoUrlError> {
-//         super::NewReceiver::new((*address).clone(), directory, (*ohttp_keys).clone(), expire_after)
-//             .map(Into::into)
-//     }
+        impl From<$uni_type> for $inner_type {
+            fn from(value: $uni_type) -> Self {
+                value.0
+            }
+        }
+    };
+}
 
-//     /// Saves the new [`Receiver`] using the provided persister and returns the storage token.
-//     pub fn persist(
-//         &self,
-//         persister: Arc<dyn ReceiverPersister>,
-//     ) -> Result<ReceiverToken, ImplementationError> {
-//         let mut adapter = CallbackPersisterAdapter::new(persister);
-//         self.0.persist(&mut adapter)
-//     }
-// }
+macro_rules! impl_from_payjoin_methods {
+    ($uni_type:ty, $payjoin_type:ty) => {
+        impl From<$uni_type> for $payjoin_type {
+            fn from(value: $uni_type) -> Self {
+                value.0.into()
+            }
+        }
 
-// #[derive(Clone, Debug, uniffi::Object)]
-// pub struct ReceiverToken(#[allow(dead_code)] payjoin::receive::v2::ReceiverToken);
-
-// impl From<payjoin::receive::v2::Receiver> for ReceiverToken {
-//     fn from(value: payjoin::receive::v2::Receiver) -> Self {
-//         ReceiverToken(value.into())
-//     }
-// }
-
-// impl From<payjoin::receive::v2::ReceiverToken> for ReceiverToken {
-//     fn from(value: payjoin::receive::v2::ReceiverToken) -> Self {
-//         ReceiverToken(value)
-//     }
-// }
-
-// #[derive(Clone, Debug, uniffi::Object)]
-// pub struct Receiver(super::Receiver);
-
-// impl From<Receiver> for super::Receiver {
-//     fn from(value: Receiver) -> Self {
-//         value.0
-//     }
-// }
-
-// impl From<super::Receiver> for Receiver {
-//     fn from(value: super::Receiver) -> Self {
-//         Self(value)
-//     }
-// }
-
-// #[uniffi::export]
-// impl Receiver {
-//     /// Loads a [`Receiver`] from the provided persister using the storage token.
-//     #[uniffi::constructor]
-//     pub fn load(
-//         token: Arc<ReceiverToken>,
-//         persister: Arc<dyn ReceiverPersister>,
-//     ) -> Result<Self, ImplementationError> {
-//         Ok(super::Receiver::from(persister.load(token).unwrap()).into())
-//     }
-
-//     /// The contents of the `&pj=` query parameter including the base64url-encoded public key receiver subdirectory.
-//     /// This identifies a session at the payjoin directory server.
-//     pub fn pj_uri(&self) -> crate::PjUri {
-//         self.0.pj_uri()
-//     }
-
-//     pub fn extract_req(&self, ohttp_relay: String) -> Result<RequestResponse, Error> {
-//         self.0
-//             .extract_req(ohttp_relay)
-//             .map(|(request, ctx)| RequestResponse { request, client_response: Arc::new(ctx) })
-//     }
-
-//     ///The response can either be an UncheckedProposal or an ACCEPTED message indicating no UncheckedProposal is available yet.
-//     pub fn process_res(
-//         &self,
-//         body: &[u8],
-//         context: Arc<ClientResponse>,
-//     ) -> Result<Option<Arc<UncheckedProposal>>, Error> {
-//         <Self as Into<super::Receiver>>::into(self.clone())
-//             .process_res(body, context.as_ref())
-//             .map(|e| e.map(|x| Arc::new(x.into())))
-//     }
-
-//     ///The per-session public key to use as an identifier
-//     pub fn id(&self) -> String {
-//         self.0.id()
-//     }
-
-//     pub fn to_json(&self) -> Result<String, SerdeJsonError> {
-//         self.0.to_json()
-//     }
-
-//     #[uniffi::constructor]
-//     pub fn from_json(json: &str) -> Result<Self, SerdeJsonError> {
-//         super::Receiver::from_json(json).map(Into::into)
-//     }
-
-//     pub fn key(&self) -> ReceiverToken {
-//         self.0.key().into()
-//     }
-// }
+        impl From<$payjoin_type> for $uni_type {
+            fn from(value: $payjoin_type) -> Self {
+                Self(value.into())
+            }
+        }
+    };
+}
 #[derive(uniffi::Object)]
 pub struct UninitializedReceiver(pub(crate) super::UninitializedReceiver);
 
@@ -181,20 +97,11 @@ impl UninitializedReceiver {
     }
 }
 
-#[derive(uniffi::Object)]
+#[derive(uniffi::Object, Clone)]
 pub struct ReceiverWithContext(super::ReceiverWithContext);
 
-impl From<super::ReceiverWithContext> for ReceiverWithContext {
-    fn from(value: super::ReceiverWithContext) -> Self {
-        Self(value)
-    }
-}
-
-// impl From<super::ReceiverWithContext> for Arc<ReceiverWithContext> {
-//     fn from(value: super::ReceiverWithContext) -> Self {
-//         Arc::new(ReceiverWithContext(value))
-//     }
-// }
+impl_from_super_methods!(ReceiverWithContext, super::ReceiverWithContext);
+impl_from_payjoin_methods!(ReceiverWithContext, payjoin::receive::v2::ReceiverWithContext);
 
 #[uniffi::export]
 impl ReceiverWithContext {
@@ -238,11 +145,8 @@ pub trait CanBroadcast: Send + Sync {
 #[derive(Clone, uniffi::Object)]
 pub struct UncheckedProposal(super::UncheckedProposal);
 
-impl From<super::UncheckedProposal> for UncheckedProposal {
-    fn from(value: super::UncheckedProposal) -> Self {
-        Self(value)
-    }
-}
+impl_from_super_methods!(UncheckedProposal, super::UncheckedProposal);
+impl_from_payjoin_methods!(UncheckedProposal, payjoin::receive::v2::UncheckedProposal);
 
 #[uniffi::export]
 impl UncheckedProposal {
@@ -316,11 +220,8 @@ impl UncheckedProposal {
 #[derive(Clone, uniffi::Object)]
 pub struct MaybeInputsOwned(super::MaybeInputsOwned);
 
-impl From<super::MaybeInputsOwned> for MaybeInputsOwned {
-    fn from(value: super::MaybeInputsOwned) -> Self {
-        Self(value)
-    }
-}
+impl_from_super_methods!(MaybeInputsOwned, super::MaybeInputsOwned);
+impl_from_payjoin_methods!(MaybeInputsOwned, payjoin::receive::v2::MaybeInputsOwned);
 
 #[uniffi::export(with_foreign)]
 pub trait IsScriptOwned: Send + Sync {
@@ -338,11 +239,14 @@ impl MaybeInputsOwned {
     ) -> Result<Arc<MaybeInputsSeen>, ReplyableError> {
         let adapter = CallbackPersisterAdapter::new(persister);
         self.0
-            .check_inputs_not_owned(|input| {
-                is_owned
-                    .callback(input.to_vec())
-                    .map_err(|e| ImplementationError::from(e.to_string()))
-            }, adapter)
+            .check_inputs_not_owned(
+                |input| {
+                    is_owned
+                        .callback(input.to_vec())
+                        .map_err(|e| ImplementationError::from(e.to_string()))
+                },
+                adapter,
+            )
             .map(|t| Arc::new(t.into()))
     }
 }
@@ -358,11 +262,8 @@ pub trait IsOutputKnown: Send + Sync {
 #[derive(Clone, uniffi::Object)]
 pub struct MaybeInputsSeen(super::MaybeInputsSeen);
 
-impl From<super::MaybeInputsSeen> for MaybeInputsSeen {
-    fn from(value: super::MaybeInputsSeen) -> Self {
-        Self(value)
-    }
-}
+impl_from_super_methods!(MaybeInputsSeen, super::MaybeInputsSeen);
+impl_from_payjoin_methods!(MaybeInputsSeen, payjoin::receive::v2::MaybeInputsSeen);
 
 #[uniffi::export]
 impl MaybeInputsSeen {
@@ -375,11 +276,14 @@ impl MaybeInputsSeen {
         let adapter = CallbackPersisterAdapter::new(persister);
         self.0
             .clone()
-            .check_no_inputs_seen_before(|outpoint| {
-                is_known
-                    .callback(outpoint.clone())
-                    .map_err(|e| ImplementationError::from(e.to_string()))
-            }, adapter)
+            .check_no_inputs_seen_before(
+                |outpoint| {
+                    is_known
+                        .callback(outpoint.clone())
+                        .map_err(|e| ImplementationError::from(e.to_string()))
+                },
+                adapter,
+            )
             .map(|t| Arc::new(t.into()))
     }
 }
@@ -390,11 +294,8 @@ impl MaybeInputsSeen {
 #[derive(Clone, uniffi::Object)]
 pub struct OutputsUnknown(super::OutputsUnknown);
 
-impl From<super::OutputsUnknown> for OutputsUnknown {
-    fn from(value: super::OutputsUnknown) -> Self {
-        Self(value)
-    }
-}
+impl_from_super_methods!(OutputsUnknown, super::OutputsUnknown);
+impl_from_payjoin_methods!(OutputsUnknown, payjoin::receive::v2::OutputsUnknown);
 
 #[uniffi::export]
 impl OutputsUnknown {
@@ -407,11 +308,14 @@ impl OutputsUnknown {
         let adapter = CallbackPersisterAdapter::new(persister);
         self.0
             .clone()
-            .identify_receiver_outputs(|output_script| {
-                is_receiver_output
-                    .callback(output_script.to_vec())
-                    .map_err(|e| ImplementationError::from(e.to_string()))
-            }, adapter)
+            .identify_receiver_outputs(
+                |output_script| {
+                    is_receiver_output
+                        .callback(output_script.to_vec())
+                        .map_err(|e| ImplementationError::from(e.to_string()))
+                },
+                adapter,
+            )
             .map(|t| Arc::new(t.into()))
     }
 }
@@ -419,11 +323,9 @@ impl OutputsUnknown {
 #[derive(uniffi::Object)]
 pub struct WantsOutputs(super::WantsOutputs);
 
-impl From<super::WantsOutputs> for WantsOutputs {
-    fn from(value: super::WantsOutputs) -> Self {
-        Self(value)
-    }
-}
+impl_from_super_methods!(WantsOutputs, super::WantsOutputs);
+impl_from_payjoin_methods!(WantsOutputs, payjoin::receive::v2::WantsOutputs);
+
 #[uniffi::export]
 impl WantsOutputs {
     pub fn output_substitution(&self) -> OutputSubstitution {
@@ -456,11 +358,8 @@ impl WantsOutputs {
 #[derive(uniffi::Object)]
 pub struct WantsInputs(super::WantsInputs);
 
-impl From<super::WantsInputs> for WantsInputs {
-    fn from(value: super::WantsInputs) -> Self {
-        Self(value)
-    }
-}
+impl_from_super_methods!(WantsInputs, super::WantsInputs);
+impl_from_payjoin_methods!(WantsInputs, payjoin::receive::v2::WantsInputs);
 
 #[uniffi::export]
 impl WantsInputs {
@@ -510,11 +409,8 @@ impl WantsInputs {
 #[derive(uniffi::Object)]
 pub struct ProvisionalProposal(super::ProvisionalProposal);
 
-impl From<super::ProvisionalProposal> for ProvisionalProposal {
-    fn from(value: super::ProvisionalProposal) -> Self {
-        Self(value)
-    }
-}
+impl_from_super_methods!(ProvisionalProposal, super::ProvisionalProposal);
+impl_from_payjoin_methods!(ProvisionalProposal, payjoin::receive::v2::ProvisionalProposal);
 
 /// A mutable checked proposal that the receiver may contribute inputs to to make a payjoin.
 #[uniffi::export]
@@ -550,17 +446,8 @@ pub trait ProcessPsbt: Send + Sync {
 #[derive(Clone, uniffi::Object)]
 pub struct PayjoinProposal(super::PayjoinProposal);
 
-impl From<PayjoinProposal> for super::PayjoinProposal {
-    fn from(value: PayjoinProposal) -> Self {
-        value.0
-    }
-}
-
-impl From<super::PayjoinProposal> for PayjoinProposal {
-    fn from(value: super::PayjoinProposal) -> Self {
-        Self(value)
-    }
-}
+impl_from_super_methods!(PayjoinProposal, super::PayjoinProposal);
+impl_from_payjoin_methods!(PayjoinProposal, payjoin::receive::v2::PayjoinProposal);
 
 #[uniffi::export]
 impl PayjoinProposal {
@@ -607,62 +494,59 @@ pub trait ReceiverPersistedSession: Send + Sync {
     fn close(&self) -> Result<(), ForeignError>;
 }
 
-#[derive(Clone, uniffi::Object)]
+#[derive(Clone, uniffi::Object, serde::Serialize, serde::Deserialize, Debug)]
 pub struct UniReceiverSessionContext(payjoin::receive::v2::SessionContext);
 
-#[uniffi::export]
-impl UniReceiverSessionContext {
-    pub fn to_json(&self) -> String {
-        serde_json::to_string(&self.0).unwrap()
-    }
+impl_json_methods!(UniReceiverSessionContext);
+impl_from_super_methods!(UniReceiverSessionContext, payjoin::receive::v2::SessionContext);
 
-    #[uniffi::constructor]
-    pub fn from_json(json: String) -> Result<Self, UniReceiverError> {
-        let context: payjoin::receive::v2::SessionContext = serde_json::from_str(&json).unwrap();
-        Ok(Self(context))
-    }
-}
-
-impl From<payjoin::receive::v2::SessionContext> for UniReceiverSessionContext {
-    fn from(value: payjoin::receive::v2::SessionContext) -> Self {
-        Self(value)
-    }
-}
-
-impl From<UniReceiverSessionContext> for payjoin::receive::v2::SessionContext {
-    fn from(value: UniReceiverSessionContext) -> Self {
-        value.0
-    }
-}
-
-#[derive(Clone, uniffi::Object)]
+#[derive(Clone, uniffi::Object, serde::Serialize, serde::Deserialize, Debug)]
 pub struct UniUncheckedProposal(payjoin::receive::v1::UncheckedProposal);
 
-#[uniffi::export]
-impl UniUncheckedProposal {
-    pub fn to_json(&self) -> String {
-        serde_json::to_string(&self.0).unwrap()
-    }
+impl_json_methods!(UniUncheckedProposal);
+impl_from_super_methods!(UniUncheckedProposal, payjoin::receive::v1::UncheckedProposal);
 
-    #[uniffi::constructor]
-    pub fn from_json(json: String) -> Result<Self, UniReceiverError> {
-        let proposal: payjoin::receive::v1::UncheckedProposal =
-            serde_json::from_str(&json).unwrap();
-        Ok(Self(proposal))
-    }
-}
+#[derive(Clone, uniffi::Object, serde::Serialize, serde::Deserialize, Debug)]
+pub struct UniMaybeInputsOwned(payjoin::receive::v1::MaybeInputsOwned);
 
-impl From<payjoin::receive::v1::UncheckedProposal> for UniUncheckedProposal {
-    fn from(value: payjoin::receive::v1::UncheckedProposal) -> Self {
-        Self(value)
-    }
-}
+impl_json_methods!(UniMaybeInputsOwned);
+impl_from_super_methods!(UniMaybeInputsOwned, payjoin::receive::v1::MaybeInputsOwned);
 
-impl From<UniUncheckedProposal> for payjoin::receive::v1::UncheckedProposal {
-    fn from(value: UniUncheckedProposal) -> Self {
-        value.0
-    }
-}
+#[derive(Clone, uniffi::Object, serde::Serialize, serde::Deserialize, Debug)]
+pub struct UniMaybeInputsSeen(payjoin::receive::v1::MaybeInputsSeen);
+
+impl_json_methods!(UniMaybeInputsSeen);
+impl_from_super_methods!(UniMaybeInputsSeen, payjoin::receive::v1::MaybeInputsSeen);
+
+#[derive(Clone, uniffi::Object, serde::Serialize, serde::Deserialize, Debug)]
+pub struct UniOutputsUnknown(payjoin::receive::v1::OutputsUnknown);
+
+impl_json_methods!(UniOutputsUnknown);
+impl_from_super_methods!(UniOutputsUnknown, payjoin::receive::v1::OutputsUnknown);
+
+#[derive(Clone, uniffi::Object, serde::Serialize, serde::Deserialize, Debug)]
+pub struct UniWantsOutputs(payjoin::receive::v1::WantsOutputs);
+
+impl_json_methods!(UniWantsOutputs);
+impl_from_super_methods!(UniWantsOutputs, payjoin::receive::v1::WantsOutputs);
+
+#[derive(Clone, uniffi::Object, serde::Serialize, serde::Deserialize, Debug)]
+pub struct UniWantsInputs(payjoin::receive::v1::WantsInputs);
+
+impl_json_methods!(UniWantsInputs);
+impl_from_super_methods!(UniWantsInputs, payjoin::receive::v1::WantsInputs);
+
+#[derive(Clone, uniffi::Object, serde::Serialize, serde::Deserialize, Debug)]
+pub struct UniProvisionalProposal(payjoin::receive::v1::ProvisionalProposal);
+
+impl_json_methods!(UniProvisionalProposal);
+impl_from_super_methods!(UniProvisionalProposal, payjoin::receive::v1::ProvisionalProposal);
+
+#[derive(Clone, uniffi::Object, serde::Serialize, serde::Deserialize, Debug)]
+pub struct UniPayjoinProposal(payjoin::receive::v1::PayjoinProposal);
+
+impl_json_methods!(UniPayjoinProposal);
+impl_from_super_methods!(UniPayjoinProposal, payjoin::receive::v1::PayjoinProposal);
 
 #[derive(Clone, Debug, thiserror::Error, uniffi::Error)]
 pub enum UniReceiverError {
@@ -670,10 +554,107 @@ pub enum UniReceiverError {
     SomeError(String),
 }
 
-#[derive(Clone, uniffi::Enum)]
+#[derive(Clone, uniffi::Enum, serde::Serialize, serde::Deserialize)]
 pub enum UniReceiverSessionEvent {
     Created { inner: Arc<UniReceiverSessionContext> },
     UncheckedProposal { inner: Arc<UniUncheckedProposal> },
+    MaybeInputsOwned { inner: Arc<UniMaybeInputsOwned> },
+    MaybeInputsSeen { inner: Arc<UniMaybeInputsSeen> },
+    OutputsUnknown { inner: Arc<UniOutputsUnknown> },
+    WantsOutputs { inner: Arc<UniWantsOutputs> },
+    WantsInputs { inner: Arc<UniWantsInputs> },
+    ProvisionalProposal { inner: Arc<UniProvisionalProposal> },
+    PayjoinProposal { inner: Arc<UniPayjoinProposal> },
+    FallbackBroadcasted { txid: String },
+    SessionInvalid { reason: String },
+}
+
+impl From<payjoin::receive::v2::ReceiverSessionEvent> for UniReceiverSessionEvent {
+    fn from(value: payjoin::receive::v2::ReceiverSessionEvent) -> Self {
+        match value {
+            payjoin::receive::v2::ReceiverSessionEvent::Created(context) => {
+                Self::Created { inner: Arc::new(context.into()) }
+            }
+            payjoin::receive::v2::ReceiverSessionEvent::UncheckedProposal(proposal) => {
+                Self::UncheckedProposal { inner: Arc::new(proposal.into()) }
+            }
+            payjoin::receive::v2::ReceiverSessionEvent::MaybeInputsOwned(inputs) => {
+                Self::MaybeInputsOwned { inner: Arc::new(inputs.into()) }
+            }
+            payjoin::receive::v2::ReceiverSessionEvent::MaybeInputsSeen(inputs) => {
+                Self::MaybeInputsSeen { inner: Arc::new(inputs.into()) }
+            }
+            payjoin::receive::v2::ReceiverSessionEvent::OutputsUnknown(unknown) => {
+                Self::OutputsUnknown { inner: Arc::new(unknown.into()) }
+            }
+            payjoin::receive::v2::ReceiverSessionEvent::WantsOutputs(outputs) => {
+                Self::WantsOutputs { inner: Arc::new(outputs.into()) }
+            }
+            payjoin::receive::v2::ReceiverSessionEvent::WantsInputs(inputs) => {
+                Self::WantsInputs { inner: Arc::new(inputs.into()) }
+            }
+            payjoin::receive::v2::ReceiverSessionEvent::ProvisionalProposal(proposal) => {
+                Self::ProvisionalProposal { inner: Arc::new(proposal.into()) }
+            }
+            payjoin::receive::v2::ReceiverSessionEvent::PayjoinProposal(proposal) => {
+                Self::PayjoinProposal { inner: Arc::new(proposal.into()) }
+            }
+            payjoin::receive::v2::ReceiverSessionEvent::FallbackBroadcasted(txid) => {
+                Self::FallbackBroadcasted { txid: txid.to_string() }
+            }
+            payjoin::receive::v2::ReceiverSessionEvent::SessionInvalid(reason) => {
+                Self::SessionInvalid { reason }
+            }
+        }
+    }
+}
+
+impl From<UniReceiverSessionEvent> for payjoin::receive::v2::ReceiverSessionEvent {
+    fn from(value: UniReceiverSessionEvent) -> Self {
+        match value {
+            UniReceiverSessionEvent::Created { inner } => {
+                payjoin::receive::v2::ReceiverSessionEvent::Created(inner.0.clone())
+            }
+            UniReceiverSessionEvent::UncheckedProposal { inner } => {
+                payjoin::receive::v2::ReceiverSessionEvent::UncheckedProposal(inner.0.clone())
+            }
+            UniReceiverSessionEvent::MaybeInputsOwned { inner } => {
+                payjoin::receive::v2::ReceiverSessionEvent::MaybeInputsOwned(inner.0.clone())
+            }
+            UniReceiverSessionEvent::MaybeInputsSeen { inner } => {
+                payjoin::receive::v2::ReceiverSessionEvent::MaybeInputsSeen(inner.0.clone())
+            }
+            UniReceiverSessionEvent::OutputsUnknown { inner } => {
+                payjoin::receive::v2::ReceiverSessionEvent::OutputsUnknown(inner.0.clone())
+            }
+            UniReceiverSessionEvent::WantsOutputs { inner } => {
+                payjoin::receive::v2::ReceiverSessionEvent::WantsOutputs(inner.0.clone())
+            }
+            UniReceiverSessionEvent::WantsInputs { inner } => {
+                payjoin::receive::v2::ReceiverSessionEvent::WantsInputs(inner.0.clone())
+            }
+            UniReceiverSessionEvent::ProvisionalProposal { inner } => {
+                payjoin::receive::v2::ReceiverSessionEvent::ProvisionalProposal(inner.0.clone())
+            }
+            UniReceiverSessionEvent::PayjoinProposal { inner } => {
+                payjoin::receive::v2::ReceiverSessionEvent::PayjoinProposal(inner.0.clone())
+            }
+            UniReceiverSessionEvent::FallbackBroadcasted { txid } => {
+                payjoin::receive::v2::ReceiverSessionEvent::FallbackBroadcasted(
+                    payjoin::bitcoin::Txid::from_str(&txid).unwrap(),
+                )
+            }
+            UniReceiverSessionEvent::SessionInvalid { reason } => {
+                payjoin::receive::v2::ReceiverSessionEvent::SessionInvalid(reason.clone())
+            }
+        }
+    }
+}
+
+impl payjoin::persist::Event for UniReceiverSessionEvent {
+    fn session_invalid(error: &impl payjoin::persist::PersistableError) -> Self {
+        Self::SessionInvalid { reason: error.to_string() }
+    }
 }
 
 #[uniffi::export]
@@ -688,20 +669,54 @@ fn from_json(json: String) -> Result<UniReceiverSessionEvent, UniReceiverError> 
 
 impl UniReceiverSessionEvent {
     pub fn to_json(&self) -> String {
-        match self {
+        let event = match self {
             UniReceiverSessionEvent::Created { inner } => {
                 let inner = payjoin::receive::v2::SessionContext::from(inner.0.clone());
-                serde_json::to_string(&payjoin::receive::v2::ReceiverSessionEvent::Created(inner))
-                    .unwrap()
+                payjoin::receive::v2::ReceiverSessionEvent::Created(inner)
             }
             UniReceiverSessionEvent::UncheckedProposal { inner } => {
                 let inner = payjoin::receive::v1::UncheckedProposal::from(inner.0.clone());
-                serde_json::to_string(
-                    &payjoin::receive::v2::ReceiverSessionEvent::UncheckedProposal(inner),
-                )
-                .unwrap()
+                payjoin::receive::v2::ReceiverSessionEvent::UncheckedProposal(inner)
             }
-        }
+            UniReceiverSessionEvent::MaybeInputsOwned { inner } => {
+                let inner = payjoin::receive::v1::MaybeInputsOwned::from(inner.0.clone());
+                payjoin::receive::v2::ReceiverSessionEvent::MaybeInputsOwned(inner)
+            }
+            UniReceiverSessionEvent::MaybeInputsSeen { inner } => {
+                let inner = payjoin::receive::v1::MaybeInputsSeen::from(inner.0.clone());
+                payjoin::receive::v2::ReceiverSessionEvent::MaybeInputsSeen(inner)
+            }
+            UniReceiverSessionEvent::OutputsUnknown { inner } => {
+                let inner = payjoin::receive::v1::OutputsUnknown::from(inner.0.clone());
+                payjoin::receive::v2::ReceiverSessionEvent::OutputsUnknown(inner)
+            }
+            UniReceiverSessionEvent::WantsOutputs { inner } => {
+                let inner = payjoin::receive::v1::WantsOutputs::from(inner.0.clone());
+                payjoin::receive::v2::ReceiverSessionEvent::WantsOutputs(inner)
+            }
+            UniReceiverSessionEvent::WantsInputs { inner } => {
+                let inner = payjoin::receive::v1::WantsInputs::from(inner.0.clone());
+                payjoin::receive::v2::ReceiverSessionEvent::WantsInputs(inner)
+            }
+            UniReceiverSessionEvent::ProvisionalProposal { inner } => {
+                let inner = payjoin::receive::v1::ProvisionalProposal::from(inner.0.clone());
+                payjoin::receive::v2::ReceiverSessionEvent::ProvisionalProposal(inner)
+            }
+            UniReceiverSessionEvent::PayjoinProposal { inner } => {
+                let inner = payjoin::receive::v1::PayjoinProposal::from(inner.0.clone());
+                payjoin::receive::v2::ReceiverSessionEvent::PayjoinProposal(inner)
+            }
+            UniReceiverSessionEvent::FallbackBroadcasted { txid } => {
+                // TODO: intenral type should use bitcoin::Txid
+                payjoin::receive::v2::ReceiverSessionEvent::FallbackBroadcasted(
+                    payjoin::bitcoin::Txid::from_str(&txid).unwrap(),
+                )
+            }
+            UniReceiverSessionEvent::SessionInvalid { reason } => {
+                payjoin::receive::v2::ReceiverSessionEvent::SessionInvalid(reason.clone())
+            }
+        };
+        serde_json::to_string(&event).unwrap()
     }
 
     pub fn from_json(json: String) -> Result<Self, UniReceiverError> {
@@ -721,10 +736,34 @@ impl From<UniReceiverSessionEvent> for super::ReceiverSessionEvent {
             UniReceiverSessionEvent::UncheckedProposal { inner } => {
                 super::ReceiverSessionEvent::UncheckedProposal((*inner).clone().into())
             }
-            _ => {
-                todo!(
-                "Implement conversion from UniReceiverSessionEvent back to ReceiverSessionEvent"
-            )
+            UniReceiverSessionEvent::MaybeInputsOwned { inner } => {
+                super::ReceiverSessionEvent::MaybeInputsOwned((*inner).clone().into())
+            }
+            UniReceiverSessionEvent::MaybeInputsSeen { inner } => {
+                super::ReceiverSessionEvent::MaybeInputsSeen((*inner).clone().into())
+            }
+            UniReceiverSessionEvent::OutputsUnknown { inner } => {
+                super::ReceiverSessionEvent::OutputsUnknown((*inner).clone().into())
+            }
+            UniReceiverSessionEvent::WantsOutputs { inner } => {
+                super::ReceiverSessionEvent::WantsOutputs((*inner).clone().into())
+            }
+            UniReceiverSessionEvent::WantsInputs { inner } => {
+                super::ReceiverSessionEvent::WantsInputs((*inner).clone().into())
+            }
+            UniReceiverSessionEvent::ProvisionalProposal { inner } => {
+                super::ReceiverSessionEvent::ProvisionalProposal((*inner).clone().into())
+            }
+            UniReceiverSessionEvent::PayjoinProposal { inner } => {
+                super::ReceiverSessionEvent::PayjoinProposal((*inner).clone().into())
+            }
+            UniReceiverSessionEvent::FallbackBroadcasted { txid } => {
+                super::ReceiverSessionEvent::FallbackBroadcasted(
+                    payjoin::bitcoin::Txid::from_str(&txid).unwrap(),
+                )
+            }
+            UniReceiverSessionEvent::SessionInvalid { reason } => {
+                super::ReceiverSessionEvent::SessionInvalid(reason.clone())
             }
         }
     }
@@ -739,13 +778,96 @@ impl From<super::ReceiverSessionEvent> for UniReceiverSessionEvent {
             super::ReceiverSessionEvent::UncheckedProposal(proposal) => {
                 UniReceiverSessionEvent::UncheckedProposal { inner: Arc::new(proposal.into()) }
             }
-            _ => {
-                todo!(
-                "Implement conversion from UniReceiverSessionEvent back to ReceiverSessionEvent"
-            )
+            super::ReceiverSessionEvent::MaybeInputsOwned(inputs) => {
+                UniReceiverSessionEvent::MaybeInputsOwned { inner: Arc::new(inputs.into()) }
+            }
+            super::ReceiverSessionEvent::MaybeInputsSeen(inputs) => {
+                UniReceiverSessionEvent::MaybeInputsSeen { inner: Arc::new(inputs.into()) }
+            }
+            super::ReceiverSessionEvent::OutputsUnknown(unknown) => {
+                UniReceiverSessionEvent::OutputsUnknown { inner: Arc::new(unknown.into()) }
+            }
+            super::ReceiverSessionEvent::WantsOutputs(outputs) => {
+                UniReceiverSessionEvent::WantsOutputs { inner: Arc::new(outputs.into()) }
+            }
+            super::ReceiverSessionEvent::WantsInputs(inputs) => {
+                UniReceiverSessionEvent::WantsInputs { inner: Arc::new(inputs.into()) }
+            }
+            super::ReceiverSessionEvent::ProvisionalProposal(proposal) => {
+                UniReceiverSessionEvent::ProvisionalProposal { inner: Arc::new(proposal.into()) }
+            }
+            super::ReceiverSessionEvent::PayjoinProposal(proposal) => {
+                UniReceiverSessionEvent::PayjoinProposal { inner: Arc::new(proposal.into()) }
+            }
+            super::ReceiverSessionEvent::FallbackBroadcasted(txid) => {
+                UniReceiverSessionEvent::FallbackBroadcasted { txid: txid.to_string() }
+            }
+            super::ReceiverSessionEvent::SessionInvalid(reason) => {
+                UniReceiverSessionEvent::SessionInvalid { reason }
             }
         }
     }
+}
+
+#[derive(Clone, uniffi::Enum)]
+pub enum UniReceiverState {
+    Uninitialized,
+    WithContext { inner: Arc<ReceiverWithContext> },
+    UncheckedProposal { inner: Arc<UncheckedProposal> },
+    MaybeInputsOwned { inner: Arc<MaybeInputsOwned> },
+    MaybeInputsSeen { inner: Arc<MaybeInputsSeen> },
+    OutputsUnknown { inner: Arc<OutputsUnknown> },
+    WantsOutputs { inner: Arc<WantsOutputs> },
+    WantsInputs { inner: Arc<WantsInputs> },
+    ProvisionalProposal { inner: Arc<ProvisionalProposal> },
+    PayjoinProposal { inner: Arc<PayjoinProposal> },
+    FallbackBroadcasted { txid: String },
+    SessionInvalid { reason: String },
+}
+
+impl From<super::ReceiverState> for UniReceiverState {
+    fn from(value: super::ReceiverState) -> Self {
+        match value {
+            super::ReceiverState::Uninitialized(inner) => UniReceiverState::Uninitialized,
+            super::ReceiverState::WithContext(inner) => {
+                UniReceiverState::WithContext { inner: Arc::new(inner.into()) }
+            }
+            super::ReceiverState::UncheckedProposal(inner) => {
+                UniReceiverState::UncheckedProposal { inner: Arc::new(inner.into()) }
+            }
+            super::ReceiverState::MaybeInputsOwned(inner) => {
+                UniReceiverState::MaybeInputsOwned { inner: Arc::new(inner.into()) }
+            }
+            super::ReceiverState::MaybeInputsSeen(inner) => {
+                UniReceiverState::MaybeInputsSeen { inner: Arc::new(inner.into()) }
+            }
+            super::ReceiverState::OutputsUnknown(inner) => {
+                UniReceiverState::OutputsUnknown { inner: Arc::new(inner.into()) }
+            }
+            super::ReceiverState::WantsOutputs(inner) => {
+                UniReceiverState::WantsOutputs { inner: Arc::new(inner.into()) }
+            }
+            super::ReceiverState::WantsInputs(inner) => {
+                UniReceiverState::WantsInputs { inner: Arc::new(inner.into()) }
+            }
+            super::ReceiverState::ProvisionalProposal(inner) => {
+                UniReceiverState::ProvisionalProposal { inner: Arc::new(inner.into()) }
+            }
+            super::ReceiverState::PayjoinProposal(inner) => {
+                UniReceiverState::PayjoinProposal { inner: Arc::new(inner.into()) }
+            }
+            _ => todo!("need to impl uni receiver state from v2 receiver state"),
+        }
+    }
+}
+
+#[uniffi::export]
+pub fn replay_receiver_event_log(
+    persister: Arc<dyn ReceiverPersistedSession>,
+) -> Result<UniReceiverState, ImplementationError> {
+    let adapter = CallbackPersisterAdapter::new(persister);
+    let res = super::replay_receiver_event_log(adapter).unwrap();
+    Ok(res.into())
 }
 
 /// Adapter for the ReceiverPersister trait to use the save and load callbacks.
@@ -761,7 +883,7 @@ impl CallbackPersisterAdapter {
 }
 
 impl payjoin::persist::PersistedSession for CallbackPersisterAdapter {
-    type SessionEvent = super::ReceiverSessionEvent;
+    type SessionEvent = UniReceiverSessionEvent;
     type Error = ForeignError;
 
     fn save(&self, event: Self::SessionEvent) -> Result<(), Self::Error> {
@@ -769,8 +891,10 @@ impl payjoin::persist::PersistedSession for CallbackPersisterAdapter {
     }
 
     fn load(&self) -> Result<Box<dyn Iterator<Item = Self::SessionEvent>>, Self::Error> {
+        println!("Loading events...");
         let res = self.callback_persister.load()?;
-        Ok(Box::new(res.into_iter().map(|event| event.into())))
+        println!("Loaded {:?} events", res.len());
+        Ok(Box::new(res.into_iter().map(|event| event)))
     }
 
     fn close(&self) -> Result<(), Self::Error> {

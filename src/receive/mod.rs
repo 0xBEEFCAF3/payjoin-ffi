@@ -217,11 +217,47 @@ impl From<ReceiverSessionEvent> for payjoin::receive::v2::ReceiverSessionEvent {
     }
 }
 
-pub struct ReceiverState(payjoin::receive::v2::ReceiverState);
+pub enum ReceiverState {
+    Uninitialized(payjoin::receive::v2::UninitializedReceiver),
+    WithContext(payjoin::receive::v2::ReceiverWithContext),
+    UncheckedProposal(payjoin::receive::v2::UncheckedProposal),
+    MaybeInputsOwned(payjoin::receive::v2::MaybeInputsOwned),
+    MaybeInputsSeen(payjoin::receive::v2::MaybeInputsSeen),
+    OutputsUnknown(payjoin::receive::v2::OutputsUnknown),
+    WantsOutputs(payjoin::receive::v2::WantsOutputs),
+    WantsInputs(payjoin::receive::v2::WantsInputs),
+    ProvisionalProposal(payjoin::receive::v2::ProvisionalProposal),
+    PayjoinProposal(payjoin::receive::v2::PayjoinProposal),
+    FallbackBroadcasted(payjoin::bitcoin::Txid),
+    SessionInvalid(String),
+}
 
 impl From<payjoin::receive::v2::ReceiverState> for ReceiverState {
     fn from(value: payjoin::receive::v2::ReceiverState) -> Self {
-        Self(value)
+        match value {
+            payjoin::receive::v2::ReceiverState::Uninitialized(inner) => Self::Uninitialized(inner),
+            payjoin::receive::v2::ReceiverState::WithContext(inner) => Self::WithContext(inner),
+            payjoin::receive::v2::ReceiverState::UncheckedProposal(inner) => {
+                Self::UncheckedProposal(inner)
+            }
+            payjoin::receive::v2::ReceiverState::MaybeInputsOwned(inner) => {
+                Self::MaybeInputsOwned(inner)
+            }
+            payjoin::receive::v2::ReceiverState::MaybeInputsSeen(inner) => {
+                Self::MaybeInputsSeen(inner)
+            }
+            payjoin::receive::v2::ReceiverState::OutputsUnknown(inner) => {
+                Self::OutputsUnknown(inner)
+            }
+            payjoin::receive::v2::ReceiverState::WantsOutputs(inner) => Self::WantsOutputs(inner),
+            payjoin::receive::v2::ReceiverState::WantsInputs(inner) => Self::WantsInputs(inner),
+            payjoin::receive::v2::ReceiverState::ProvisionalProposal(inner) => {
+                Self::ProvisionalProposal(inner)
+            }
+            payjoin::receive::v2::ReceiverState::PayjoinProposal(inner) => {
+                Self::PayjoinProposal(inner)
+            }
+        }
     }
 }
 
@@ -266,6 +302,7 @@ impl UninitializedReceiver {
     }
 }
 
+#[derive(Clone)]
 pub struct ReceiverWithContext(payjoin::receive::v2::ReceiverWithContext);
 
 impl From<ReceiverWithContext> for payjoin::receive::v2::ReceiverWithContext {
@@ -399,6 +436,12 @@ impl From<payjoin::receive::v2::MaybeInputsOwned> for MaybeInputsOwned {
     }
 }
 
+impl From<MaybeInputsOwned> for payjoin::receive::v2::MaybeInputsOwned {
+    fn from(value: MaybeInputsOwned) -> Self {
+        value.0
+    }
+}
+
 impl MaybeInputsOwned {
     pub fn check_inputs_not_owned<P>(
         &self,
@@ -423,6 +466,12 @@ pub struct MaybeInputsSeen(payjoin::receive::v2::MaybeInputsSeen);
 impl From<payjoin::receive::v2::MaybeInputsSeen> for MaybeInputsSeen {
     fn from(value: payjoin::receive::v2::MaybeInputsSeen) -> Self {
         Self(value)
+    }
+}
+
+impl From<MaybeInputsSeen> for payjoin::receive::v2::MaybeInputsSeen {
+    fn from(value: MaybeInputsSeen) -> Self {
+        value.0
     }
 }
 
@@ -457,6 +506,12 @@ impl From<payjoin::receive::v2::OutputsUnknown> for OutputsUnknown {
     }
 }
 
+impl From<OutputsUnknown> for payjoin::receive::v2::OutputsUnknown {
+    fn from(value: OutputsUnknown) -> Self {
+        value.0
+    }
+}
+
 impl OutputsUnknown {
     /// Find which outputs belong to the receiver
     pub fn identify_receiver_outputs<P>(
@@ -484,6 +539,12 @@ pub struct WantsOutputs(payjoin::receive::v2::WantsOutputs);
 impl From<payjoin::receive::v2::WantsOutputs> for WantsOutputs {
     fn from(value: payjoin::receive::v2::WantsOutputs) -> Self {
         Self(value)
+    }
+}
+
+impl From<WantsOutputs> for payjoin::receive::v2::WantsOutputs {
+    fn from(value: WantsOutputs) -> Self {
+        value.0
     }
 }
 
@@ -533,6 +594,13 @@ impl From<payjoin::receive::v2::WantsInputs> for WantsInputs {
         Self(value)
     }
 }
+
+impl From<WantsInputs> for payjoin::receive::v2::WantsInputs {
+    fn from(value: WantsInputs) -> Self {
+        value.0
+    }
+}
+
 impl WantsInputs {
     /// Select receiver input such that the payjoin avoids surveillance.
     /// Return the input chosen that has been applied to the Proposal.
@@ -607,6 +675,12 @@ pub struct ProvisionalProposal(pub payjoin::receive::v2::ProvisionalProposal);
 impl From<payjoin::receive::v2::ProvisionalProposal> for ProvisionalProposal {
     fn from(value: payjoin::receive::v2::ProvisionalProposal) -> Self {
         Self(value)
+    }
+}
+
+impl From<ProvisionalProposal> for payjoin::receive::v2::ProvisionalProposal {
+    fn from(value: ProvisionalProposal) -> Self {
+        value.0
     }
 }
 
