@@ -6,7 +6,7 @@ pub use error::{
     PsbtInputError, ReplyableError, SelectionError, SessionError,
 };
 use payjoin::bitcoin::psbt::Psbt;
-use payjoin::bitcoin::FeeRate;
+use payjoin::bitcoin::{Amount, FeeRate};
 use payjoin::persist::PersistedSession;
 use payjoin::PjUri;
 use serde::{Deserialize, Serialize};
@@ -75,6 +75,22 @@ impl SessionHistory {
 
     pub fn pj_uri(&self) -> Option<crate::PjUri> {
         self.0.pj_uri().map(|uri| uri.into())
+    }
+
+    pub fn payment_amount(&self) -> Option<crate::Amount> {
+        self.0.payment_amount().map(|amount| amount.into())
+    }
+
+    pub fn payment_address(&self) -> Option<crate::Address> {
+        self.0.payment_address().map(|address| address.into())
+    }
+
+    pub fn fallback_txid(&self) -> Option<crate::Txid> {
+        self.0.fallback_txid().map(|txid| txid.into())
+    }
+
+    pub fn proposal_txid(&self) -> Option<crate::Txid> {
+        self.0.proposal_txid().map(|txid| txid.into())
     }
 }
 

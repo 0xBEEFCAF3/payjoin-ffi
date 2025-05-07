@@ -591,6 +591,30 @@ impl SessionHistory {
         Some(Arc::new(uri.into()))
     }
 
+    pub fn payment_amount(&self) -> Option<Arc<crate::Amount>> {
+        let guard = self.0.lock().unwrap();
+        let amount = guard.payment_amount()?;
+        Some(Arc::new(amount.into()))
+    }
+
+    pub fn payment_address(&self) -> Option<Arc<crate::Address>> {
+        let guard = self.0.lock().unwrap();
+        let address = guard.payment_address()?;
+        Some(Arc::new(address.into()))
+    }
+
+    pub fn fallback_txid(&self) -> Option<String> {
+        let guard = self.0.lock().unwrap();
+        let txid = guard.fallback_txid()?;
+        Some(txid.to_string())
+    }
+
+    pub fn proposal_txid(&self) -> Option<String> {
+        let guard = self.0.lock().unwrap();
+        let txid = guard.proposal_txid()?;
+        Some(txid.to_string())
+    }
+    
     pub fn replay_receiver_event_log(
         &self,
         persister: Arc<dyn ReceiverPersistedSession>,
