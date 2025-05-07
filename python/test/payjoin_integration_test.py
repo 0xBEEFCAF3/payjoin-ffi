@@ -90,7 +90,7 @@ rpc_port = os.environ.get("RPC_PORT", "18443")
 #         if token not in self.senders.keys():
 #             raise ValueError(f"Token not found: {token}")
 #         return Sender.from_json(self.senders[token])
-class ReceieverSessionEventLog(ReceiverPersistedSession):
+class ReceieverSessionEventLog(JsonReceiverPersistedSession):
     def __init__(self, id):
         self.id = id
         self.events = []

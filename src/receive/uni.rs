@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::sync::Arc;
 
 use payjoin::receive::v2::State;
@@ -11,7 +10,7 @@ pub use crate::receive::{
     ReplyableError, SelectionError, SerdeJsonError, SessionError,
 };
 use crate::uri::error::IntoUrlError;
-use crate::{ClientResponse, OhttpKeys, OutputSubstitution, PjUri, Request};
+use crate::{ClientResponse, OhttpKeys, OutputSubstitution, Request};
 
 macro_rules! impl_from_super_methods {
     ($uni_type:ty, $inner_type:ty) => {
@@ -35,7 +34,7 @@ pub struct UninitializedReceiver {}
 #[uniffi::export]
 impl UninitializedReceiver {
     #[uniffi::constructor]
-    // TODO: we really shouldnt have to
+    // TODO: no need for this constructor. `create_session` is the only way to create a receiver.
     pub fn new() -> Self {
         Self {}
     }
@@ -46,7 +45,7 @@ impl UninitializedReceiver {
         directory: String,
         ohttp_keys: Arc<OhttpKeys>,
         expire_after: Option<u64>,
-        persister: Arc<dyn ReceiverPersistedSession>,
+        persister: Arc<dyn JsonReceiverPersistedSession>,
     ) -> Result<ReceiverWithContext, IntoUrlError> {
         let adapter = CallbackPersisterAdapter::new(persister);
         let receiver = super::UninitializedReceiver::create_session(
@@ -406,8 +405,9 @@ impl PayjoinProposal {
     }
 }
 
+/// A trait for a persisted session that can be used to save and load events as JSON strings.
 #[uniffi::export(with_foreign)]
-pub trait ReceiverPersistedSession: Send + Sync {
+pub trait JsonReceiverPersistedSession: Send + Sync {
     fn save(&self, event: String) -> Result<(), ForeignError>;
     fn load(&self) -> Result<Vec<String>, ForeignError>;
     fn close(&self) -> Result<(), ForeignError>;
@@ -614,10 +614,10 @@ impl SessionHistory {
         let txid = guard.proposal_txid()?;
         Some(txid.to_string())
     }
-    
+
     pub fn replay_receiver_event_log(
         &self,
-        persister: Arc<dyn ReceiverPersistedSession>,
+        persister: Arc<dyn JsonReceiverPersistedSession>,
     ) -> Result<UniReceiverState, ImplementationError> {
         let adapter = CallbackPersisterAdapter::new(persister);
         let res = self.0.lock().unwrap().replay_receiver_event_log(adapter.clone())?;
@@ -629,11 +629,11 @@ impl SessionHistory {
 /// Adapter for the ReceiverPersister trait to use the save and load callbacks.
 #[derive(Clone)]
 struct CallbackPersisterAdapter {
-    callback_persister: Arc<dyn ReceiverPersistedSession>,
+    callback_persister: Arc<dyn JsonReceiverPersistedSession>,
 }
 
 impl CallbackPersisterAdapter {
-    pub fn new(callback_persister: Arc<dyn ReceiverPersistedSession>) -> Self {
+    pub fn new(callback_persister: Arc<dyn JsonReceiverPersistedSession>) -> Self {
         Self { callback_persister }
     }
 }
