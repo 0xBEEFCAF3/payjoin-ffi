@@ -1,7 +1,5 @@
 use std::sync::Arc;
 
-use payjoin::receive::v2::State;
-
 use super::InputPair;
 use crate::bitcoin_ffi::{Address, OutPoint, Script, TxOut};
 use crate::error::ForeignError;
@@ -486,83 +484,6 @@ pub enum UniReceiverState {
     SessionInvalid { reason: String },
 }
 
-impl UniReceiverState {
-    /// Convert a super type state into a UniReceiverState
-    /// UniReceiverState's are stateful representations of the receiver state
-    /// that hold a reference to the persister via their super wrapper which is a wrapper over the v2 typestate
-    /// which holds a reference to the persister
-    /// From and Into impls do not work here bc we need the Receiver type which is stateful over the persister
-    /// and generic over its state
-    fn from_typestate(state: super::ReceiverState, adapter: CallbackPersisterAdapter) -> Self {
-        use payjoin::receive::v2::ReceiverState;
-
-        match state.0 {
-            ReceiverState::Uninitialized(_) => Self::Uninitialized,
-            // For each variant, convert to a Receiver with the adapter and wrap in Arc
-            ReceiverState::WithContext(inner) => {
-                Self::WithContext {
-                    inner: Arc::new(
-                        super::ReceiverWithContext::from(inner.into_receiver(adapter)).into(),
-                    ),
-                }
-            }
-            ReceiverState::UncheckedProposal(inner) => {
-                Self::UncheckedProposal {
-                    inner: Arc::new(
-                        super::UncheckedProposal::from(inner.into_receiver(adapter)).into(),
-                    ),
-                }
-            }
-            ReceiverState::MaybeInputsOwned(inner) => {
-                Self::MaybeInputsOwned {
-                    inner: Arc::new(
-                        super::MaybeInputsOwned::from(inner.into_receiver(adapter)).into(),
-                    ),
-                }
-            }
-            ReceiverState::MaybeInputsSeen(inner) => {
-                Self::MaybeInputsSeen {
-                    inner: Arc::new(
-                        super::MaybeInputsSeen::from(inner.into_receiver(adapter)).into(),
-                    ),
-                }
-            }
-            ReceiverState::OutputsUnknown(inner) => {
-                Self::OutputsUnknown {
-                    inner: Arc::new(
-                        super::OutputsUnknown::from(inner.into_receiver(adapter)).into(),
-                    ),
-                }
-            }
-            ReceiverState::WantsOutputs(inner) => {
-                Self::WantsOutputs {
-                    inner: Arc::new(super::WantsOutputs::from(inner.into_receiver(adapter)).into()),
-                }
-            }
-            ReceiverState::WantsInputs(inner) => {
-                Self::WantsInputs {
-                    inner: Arc::new(super::WantsInputs::from(inner.into_receiver(adapter)).into()),
-                }
-            }
-            ReceiverState::ProvisionalProposal(inner) => {
-                Self::ProvisionalProposal {
-                    inner: Arc::new(
-                        super::ProvisionalProposal::from(inner.into_receiver(adapter)).into(),
-                    ),
-                }
-            }
-            ReceiverState::PayjoinProposal(inner) => {
-                Self::PayjoinProposal {
-                    inner: Arc::new(
-                        super::PayjoinProposal::from(inner.into_receiver(adapter)).into(),
-                    ),
-                }
-            }
-            _ => todo!("Implement remaining receiver state conversions"),
-        }
-    }
-}
-
 #[derive(uniffi::Object)]
 pub struct SessionHistory(std::sync::Mutex<super::SessionHistory>);
 
@@ -575,6 +496,54 @@ impl From<super::SessionHistory> for SessionHistory {
 impl From<SessionHistory> for super::SessionHistory {
     fn from(value: SessionHistory) -> Self {
         value.0.into_inner().unwrap()
+    }
+}
+
+impl From<super::ReceiverState<CallbackPersisterAdapter>> for UniReceiverState {
+    fn from(value: super::ReceiverState<CallbackPersisterAdapter>) -> Self {
+        match value.0 {
+            payjoin::receive::v2::ReceiverState::Uninitialized(_) => Self::Uninitialized,
+            payjoin::receive::v2::ReceiverState::WithContext(inner) => {
+                Self::WithContext {
+                    inner: Arc::new(super::ReceiverWithContext::from(inner).into()),
+                }
+            }
+            payjoin::receive::v2::ReceiverState::UncheckedProposal(inner) => {
+                Self::UncheckedProposal {
+                    inner: Arc::new(super::UncheckedProposal::from(inner).into()),
+                }
+            }
+            payjoin::receive::v2::ReceiverState::MaybeInputsOwned(inner) => {
+                Self::MaybeInputsOwned {
+                    inner: Arc::new(super::MaybeInputsOwned::from(inner).into()),
+                }
+            }
+            payjoin::receive::v2::ReceiverState::MaybeInputsSeen(inner) => {
+                Self::MaybeInputsSeen {
+                    inner: Arc::new(super::MaybeInputsSeen::from(inner).into()),
+                }
+            }
+            payjoin::receive::v2::ReceiverState::OutputsUnknown(inner) => {
+                Self::OutputsUnknown { inner: Arc::new(super::OutputsUnknown::from(inner).into()) }
+            }
+            payjoin::receive::v2::ReceiverState::WantsOutputs(inner) => {
+                Self::WantsOutputs { inner: Arc::new(super::WantsOutputs::from(inner).into()) }
+            }
+            payjoin::receive::v2::ReceiverState::WantsInputs(inner) => {
+                Self::WantsInputs { inner: Arc::new(super::WantsInputs::from(inner).into()) }
+            }
+            payjoin::receive::v2::ReceiverState::ProvisionalProposal(inner) => {
+                Self::ProvisionalProposal {
+                    inner: Arc::new(super::ProvisionalProposal::from(inner).into()),
+                }
+            }
+            payjoin::receive::v2::ReceiverState::PayjoinProposal(inner) => {
+                Self::PayjoinProposal {
+                    inner: Arc::new(super::PayjoinProposal::from(inner).into()),
+                }
+            }
+            _ => todo!("Implement remaining receiver state conversions"),
+        }
     }
 }
 
@@ -622,7 +591,7 @@ impl SessionHistory {
         let adapter = CallbackPersisterAdapter::new(persister);
         let res = self.0.lock().unwrap().replay_receiver_event_log(adapter.clone())?;
 
-        Ok(UniReceiverState::from_typestate(res, adapter))
+        Ok(res.into())
     }
 }
 

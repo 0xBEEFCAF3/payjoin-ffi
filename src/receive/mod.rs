@@ -6,9 +6,8 @@ pub use error::{
     PsbtInputError, ReplyableError, SelectionError, SessionError,
 };
 use payjoin::bitcoin::psbt::Psbt;
-use payjoin::bitcoin::{Amount, FeeRate};
+use payjoin::bitcoin::FeeRate;
 use payjoin::persist::PersistedSession;
-use payjoin::PjUri;
 use serde::{Deserialize, Serialize};
 
 use crate::bitcoin_ffi::{Address, OutPoint, Script, TxOut};
@@ -42,10 +41,10 @@ impl From<ReceiverSessionEvent> for payjoin::receive::v2::ReceiverSessionEvent {
     }
 }
 
-pub struct ReceiverState(payjoin::receive::v2::ReceiverState);
+pub struct ReceiverState<P>(payjoin::receive::v2::ReceiverState<P>);
 
-impl From<payjoin::receive::v2::ReceiverState> for ReceiverState {
-    fn from(value: payjoin::receive::v2::ReceiverState) -> Self {
+impl<P> From<payjoin::receive::v2::ReceiverState<P>> for ReceiverState<P> {
+    fn from(value: payjoin::receive::v2::ReceiverState<P>) -> Self {
         Self(value)
     }
 }
@@ -58,11 +57,12 @@ impl From<payjoin::receive::v2::SessionHistory> for SessionHistory {
         Self(value)
     }
 }
+
 impl SessionHistory {
     pub fn replay_receiver_event_log<P>(
         &mut self,
         persister: P,
-    ) -> Result<ReceiverState, ImplementationError>
+    ) -> Result<ReceiverState<P>, ImplementationError>
     where
         P: PersistedSession + Clone,
         P::SessionEvent: From<payjoin::receive::v2::ReceiverSessionEvent>,
