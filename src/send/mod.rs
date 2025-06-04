@@ -3,12 +3,10 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 pub use error::{BuildSenderError, CreateRequestError, EncapsulationError, ResponseError};
-use payjoin::persist::{PersistedSession, Persister, Value};
 use serde::{Deserialize, Serialize};
 
 pub use crate::error::SerdeJsonError;
 use crate::ohttp::ClientResponse;
-use crate::receive::ImplementationError;
 use crate::request::Request;
 use crate::uri::{PjUri, Url};
 
@@ -17,26 +15,17 @@ pub mod error;
 pub mod uni;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SenderSessionEvent {
-    Created(String),
-    SessionInvalid(String),
-}
-
-impl payjoin::persist::Event for SenderSessionEvent {
-    fn session_invalid(error: &impl payjoin::persist::PersistableError) -> Self {
-        Self::SessionInvalid(error.to_string())
-    }
-}
+pub struct SenderSessionEvent(payjoin::send::v2::SenderSessionEvent);
 
 impl From<SenderSessionEvent> for payjoin::send::v2::SenderSessionEvent {
     fn from(value: SenderSessionEvent) -> Self {
-        todo!("Implement conversion from SenderSessionEvent back to payjoin::send::v2::SenderSessionEvent")
+        value.0
     }
 }
 
 impl From<payjoin::send::v2::SenderSessionEvent> for SenderSessionEvent {
     fn from(value: payjoin::send::v2::SenderSessionEvent) -> Self {
-        todo!("Implement conversion from payjoin::send::v2::SenderSessionEvent back to SenderSessionEvent")
+        Self(value)
     }
 }
 
@@ -51,6 +40,14 @@ impl From<payjoin::send::v2::SenderBuilder<'static>> for SenderBuilder {
         Self(value)
     }
 }
+
+pub struct InitTransition(
+    payjoin::persist::MaybeBadInitInputsTransition<
+        payjoin::send::v2::SenderSessionEvent,
+        payjoin::send::v2::Sender<payjoin::send::v2::SenderWithReplyKey>,
+        payjoin::send::BuildSenderError,
+    >,
+);
 
 impl SenderBuilder {
     /// Prepare an HTTP request and request context to process the response
@@ -77,12 +74,12 @@ impl SenderBuilder {
     // The minfeerate parameter is set if the contribution is available in change.
     //
     // This method fails if no recommendation can be made or if the PSBT is malformed.
-    pub fn build_recommended(&self, min_fee_rate: u64) -> Result<NewSender, BuildSenderError> {
-        self.0
-            .clone()
-            .build_recommended(payjoin::bitcoin::FeeRate::from_sat_per_kwu(min_fee_rate))
-            .map(|e| e.into())
-            .map_err(|e| e.into())
+    pub fn build_recommended(&self, min_fee_rate: u64) -> InitTransition {
+        InitTransition(
+            self.0
+                .clone()
+                .build_recommended(payjoin::bitcoin::FeeRate::from_sat_per_kwu(min_fee_rate)),
+        )
     }
     /// Offer the receiver contribution to pay for his input.
     ///
@@ -103,84 +100,43 @@ impl SenderBuilder {
         change_index: Option<u8>,
         min_fee_rate: u64,
         clamp_fee_contribution: bool,
-    ) -> Result<NewSender, BuildSenderError> {
-        self.0
-            .clone()
-            .build_with_additional_fee(
-                payjoin::bitcoin::Amount::from_sat(max_fee_contribution),
-                change_index.map(|x| x as usize),
-                payjoin::bitcoin::FeeRate::from_sat_per_kwu(min_fee_rate),
-                clamp_fee_contribution,
-            )
-            .map(|e| e.into())
-            .map_err(|e| e.into())
+    ) -> InitTransition {
+        InitTransition(self.0.clone().build_with_additional_fee(
+            payjoin::bitcoin::Amount::from_sat(max_fee_contribution),
+            change_index.map(|x| x as usize),
+            payjoin::bitcoin::FeeRate::from_sat_per_kwu(min_fee_rate),
+            clamp_fee_contribution,
+        ))
     }
     /// Perform Payjoin without incentivizing the payee to cooperate.
     ///
     /// While it's generally better to offer some contribution some users may wish not to.
     /// This function disables contribution.
-    pub fn build_non_incentivizing(
-        &self,
-        min_fee_rate: u64,
-    ) -> Result<NewSender, BuildSenderError> {
-        match self
-            .0
-            .clone()
-            .build_non_incentivizing(payjoin::bitcoin::FeeRate::from_sat_per_kwu(min_fee_rate))
-        {
-            Ok(e) => Ok(e.into()),
-            Err(e) => Err(e.into()),
-        }
-    }
-}
-
-pub struct NewSender(payjoin::send::v2::NewSender);
-
-impl From<payjoin::send::v2::NewSender> for NewSender {
-    fn from(value: payjoin::send::v2::NewSender) -> Self {
-        Self(value)
-    }
-}
-
-impl NewSender {
-    pub fn persist<P>(&self, persister: &mut P) -> Result<(), ImplementationError>
-    where
-        P: PersistedSession + Clone,
-        P::SessionEvent: From<payjoin::send::v2::SenderSessionEvent>,
-    {
-        self.0.persist(persister).map_err(ImplementationError::from)
-    }
-
-    pub fn build(&self) -> Sender {
-        self.0.build().into()
+    pub fn build_non_incentivizing(&self, min_fee_rate: u64) -> InitTransition {
+        InitTransition(
+            self.0
+                .clone()
+                .build_non_incentivizing(payjoin::bitcoin::FeeRate::from_sat_per_kwu(min_fee_rate)),
+        )
     }
 }
 
 #[derive(Clone)]
-pub struct Sender(payjoin::send::v2::Sender);
+pub struct SenderWithReplyKey(payjoin::send::v2::Sender<payjoin::send::v2::SenderWithReplyKey>);
 
-impl From<payjoin::send::v2::Sender> for Sender {
-    fn from(value: payjoin::send::v2::Sender) -> Self {
+impl From<payjoin::send::v2::Sender<payjoin::send::v2::SenderWithReplyKey>> for SenderWithReplyKey {
+    fn from(value: payjoin::send::v2::Sender<payjoin::send::v2::SenderWithReplyKey>) -> Self {
         Self(value)
     }
 }
 
-impl From<Sender> for payjoin::send::v2::Sender {
-    fn from(value: Sender) -> Self {
+impl From<SenderWithReplyKey> for payjoin::send::v2::Sender<payjoin::send::v2::SenderWithReplyKey> {
+    fn from(value: SenderWithReplyKey) -> Self {
         value.0
     }
 }
 
-impl Sender {
-    pub fn load<P: Persister<payjoin::send::v2::Sender>>(
-        token: P::Token,
-        persister: &P,
-    ) -> Result<Self, ImplementationError> {
-        let sender =
-            payjoin::send::v2::Sender::load(token, persister).map_err(ImplementationError::from)?;
-        Ok(sender.into())
-    }
-
+impl SenderWithReplyKey {
     pub fn extract_v1(&self) -> (Request, V1Context) {
         let (req, ctx) = self.0.clone().extract_v1();
         (req.into(), ctx.into())
@@ -191,18 +147,20 @@ impl Sender {
         &self,
         ohttp_relay: Url,
     ) -> Result<(Request, V2PostContext), CreateRequestError> {
-        match self.0.extract_v2(ohttp_relay.into()) {
+        match self.0.extract_v2(ohttp_relay.as_string()) {
             Ok((req, ctx)) => Ok((req.into(), ctx.into())),
             Err(e) => Err(e.into()),
         }
     }
 
     pub fn to_json(&self) -> Result<String, SerdeJsonError> {
-        serde_json::to_string(&self.0).map_err(Into::into)
+        todo!()
+        // serde_json::to_string(&self.0).map_err(Into::into)
     }
 
     pub fn from_json(json: &str) -> Result<Self, SerdeJsonError> {
-        serde_json::from_str::<payjoin::send::v2::Sender>(json).map_err(Into::into).map(Into::into)
+        todo!()
+        // serde_json::from_str::<payjoin::send::v2::Sender>(json).map_err(Into::into).map(Into::into)
     }
 }
 
@@ -235,10 +193,11 @@ impl V2PostContext {
     /// Call this method with response from receiver to continue BIP-??? flow. A successful response can either be None if the relay has not response yet or Some(Psbt).
     /// If the response is some valid PSBT you should sign and broadcast.
     pub fn process_response(&self, response: &[u8]) -> Result<V2GetContext, EncapsulationError> {
-        <&V2PostContext as Into<payjoin::send::v2::V2PostContext>>::into(self)
-            .process_response(response)
-            .map(Into::into)
-            .map_err(Into::into)
+        todo!()
+        // <&V2PostContext as Into<payjoin::send::v2::V2PostContext>>::into(self)
+        //     .process_response(response)
+        //     .map(Into::into)
+        //     .map_err(Into::into)
     }
 }
 
@@ -268,10 +227,11 @@ impl V2GetContext {
         &self,
         ohttp_relay: String,
     ) -> Result<(Request, ClientResponse), CreateRequestError> {
-        self.0
-            .extract_req(ohttp_relay)
-            .map(|(req, ctx)| (req.into(), ctx.into()))
-            .map_err(|e| e.into())
+        todo!()
+        // self.0
+        //     .extract_req(ohttp_relay)
+        //     .map(|(req, ctx)| (req.into(), ctx.into()))
+        //     .map_err(|e| e.into())
     }
 
     /// Decodes and validates the response.
@@ -282,10 +242,11 @@ impl V2GetContext {
         response: &[u8],
         ohttp_ctx: &ClientResponse,
     ) -> Result<Option<String>, ResponseError> {
-        match self.0.process_response(response, ohttp_ctx.into()) {
-            Ok(Some(psbt)) => Ok(Some(psbt.to_string())),
-            Ok(None) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        todo!()
+        // match self.0.process_response(response, ohttp_ctx.into()) {
+        //     Ok(Some(psbt)) => Ok(Some(psbt.to_string())),
+        //     Ok(None) => Ok(None),
+        //     Err(e) => Err(e.into()),
+        // }
     }
 }

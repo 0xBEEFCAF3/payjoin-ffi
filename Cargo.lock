@@ -1959,13 +1959,25 @@ version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1897797565f894c0902cb9621ce50e92d3a25f530e82a944cd5b84674fe0dcfc"
 dependencies = [
+ "bhttp",
  "bitcoin 0.32.5",
+ "bitcoin-hpke",
+ "bitcoin-ohttp",
+ "bitcoin_uri",
+ "http",
  "log",
+ "reqwest",
+ "rustls 0.22.4",
+ "serde",
+ "serde_json",
+ "url",
 ]
 
 [[package]]
 name = "payjoin-directory"
 version = "0.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "978b1ca452bf868ea05d535e7ff2d82b69a84ee7aa9de042bb7db7e78752bd7a"
 dependencies = [
  "anyhow",
  "bhttp",
@@ -2016,7 +2028,7 @@ dependencies = [
 
 [[package]]
 name = "payjoin-test-utils"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bitcoin 0.32.5",
  "bitcoin-ohttp",
@@ -2026,7 +2038,7 @@ dependencies = [
  "log",
  "ohttp-relay 0.0.10",
  "once_cell",
- "payjoin 0.23.0",
+ "payjoin 0.23.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "payjoin-directory",
  "rcgen",
  "reqwest",

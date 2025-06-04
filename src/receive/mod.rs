@@ -7,13 +7,12 @@ pub use error::{
 };
 use payjoin::bitcoin::psbt::Psbt;
 use payjoin::bitcoin::FeeRate;
-use payjoin::persist::PersistedSession;
+use payjoin::persist::{self, MaybeFatalTransition, NextStateTransition, SessionPersister};
 use serde::{Deserialize, Serialize};
 
 use crate::bitcoin_ffi::{Address, OutPoint, Script, TxOut};
 pub use crate::error::SerdeJsonError;
 use crate::ohttp::OhttpKeys;
-use crate::uri::error::IntoUrlError;
 use crate::{ClientResponse, OutputSubstitution, Request};
 
 pub mod error;
@@ -22,12 +21,6 @@ pub mod uni;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReceiverSessionEvent(payjoin::receive::v2::ReceiverSessionEvent);
-
-impl payjoin::persist::Event for ReceiverSessionEvent {
-    fn session_invalid(error: &impl payjoin::persist::PersistableError) -> Self {
-        Self(payjoin::receive::v2::ReceiverSessionEvent::SessionInvalid(error.to_string()))
-    }
-}
 
 impl From<payjoin::receive::v2::ReceiverSessionEvent> for ReceiverSessionEvent {
     fn from(event: payjoin::receive::v2::ReceiverSessionEvent) -> Self {
@@ -41,12 +34,26 @@ impl From<ReceiverSessionEvent> for payjoin::receive::v2::ReceiverSessionEvent {
     }
 }
 
-pub struct ReceiverState<P>(payjoin::receive::v2::ReceiverState<P>);
+pub struct ReceiverState(payjoin::receive::v2::ReceiverState);
 
-impl<P> From<payjoin::receive::v2::ReceiverState<P>> for ReceiverState<P> {
-    fn from(value: payjoin::receive::v2::ReceiverState<P>) -> Self {
+impl From<payjoin::receive::v2::ReceiverState> for ReceiverState {
+    fn from(value: payjoin::receive::v2::ReceiverState) -> Self {
         Self(value)
     }
+}
+
+pub fn replay_receiver_event_log<P>(
+    persister: P,
+) -> Result<(ReceiverState, SessionHistory), ImplementationError>
+where
+    P: SessionPersister + Clone,
+    P::SessionEvent: From<payjoin::receive::v2::ReceiverSessionEvent> + Clone,
+    payjoin::receive::v2::ReceiverSessionEvent: From<P::SessionEvent>,
+{
+    let (state, history) =
+        // TODO: better error handling
+        payjoin::receive::v2::replay_receiver_event_log(persister).map_err(|e| ImplementationError::from(e.to_string()))?;
+    Ok((state.into(), history.into()))
 }
 
 #[derive(Clone, Default)]
@@ -59,20 +66,6 @@ impl From<payjoin::receive::v2::SessionHistory> for SessionHistory {
 }
 
 impl SessionHistory {
-    pub fn replay_receiver_event_log<P>(
-        &mut self,
-        persister: P,
-    ) -> Result<ReceiverState<P>, ImplementationError>
-    where
-        P: PersistedSession + Clone,
-        P::SessionEvent: From<payjoin::receive::v2::ReceiverSessionEvent>,
-        payjoin::receive::v2::ReceiverSessionEvent: From<P::SessionEvent>,
-    {
-        // TODO: Handle error
-        let res = self.0.replay_receiver_event_log(persister).unwrap();
-        Ok(res.into())
-    }
-
     pub fn pj_uri(&self) -> Option<crate::PjUri> {
         self.0.pj_uri().map(|uri| uri.into())
     }
@@ -94,69 +87,118 @@ impl SessionHistory {
     }
 }
 
-pub struct UninitializedReceiver<P>(
-    payjoin::receive::v2::Receiver<payjoin::receive::v2::UninitializedReceiver, P>,
+pub struct UninitializedReceiver(
+    payjoin::receive::v2::Receiver<payjoin::receive::v2::UninitializedReceiver>,
 );
 
-impl<P> From<UninitializedReceiver<P>>
-    for payjoin::receive::v2::Receiver<payjoin::receive::v2::UninitializedReceiver, P>
+impl From<UninitializedReceiver>
+    for payjoin::receive::v2::Receiver<payjoin::receive::v2::UninitializedReceiver>
 {
-    fn from(value: UninitializedReceiver<P>) -> Self {
+    fn from(value: UninitializedReceiver) -> Self {
         value.0
     }
 }
 
-impl<P> UninitializedReceiver<P>
-where
-    P: PersistedSession + Clone,
-    P::SessionEvent: From<payjoin::receive::v2::ReceiverSessionEvent>,
-{
+pub struct InitInputsTransition(
+    payjoin::persist::MaybeBadInitInputsTransition<
+        payjoin::receive::v2::ReceiverSessionEvent,
+        payjoin::receive::v2::Receiver<payjoin::receive::v2::ReceiverWithContext>,
+        payjoin::IntoUrlError,
+    >,
+);
+
+impl InitInputsTransition {
+    pub fn save<P>(self, persister: &P) -> Result<ReceiverWithContext, ImplementationError>
+    where
+        P: SessionPersister<SessionEvent = payjoin::receive::v2::ReceiverSessionEvent>,
+    {
+        let res = self.0.save(persister).map_err(|e| ImplementationError::from(e.to_string()))?;
+        Ok(res.into())
+    }
+}
+
+impl UninitializedReceiver {
     pub fn create_session(
         address: Address,
         directory: String,
         ohttp_keys: OhttpKeys,
         expire_after: Option<u64>,
-        persister: P,
-    ) -> Result<ReceiverWithContext<P>, IntoUrlError> {
-        let receiver = payjoin::receive::v2::Receiver::create_session(
+    ) -> InitInputsTransition {
+        InitInputsTransition(payjoin::receive::v2::Receiver::create_session(
             address.into(),
             directory,
             ohttp_keys.into(),
             expire_after.map(Duration::from_secs),
-            persister,
-        )?;
-        Ok(receiver.into())
+        ))
     }
 }
 
 #[derive(Clone)]
-pub struct ReceiverWithContext<P>(
-    payjoin::receive::v2::Receiver<payjoin::receive::v2::ReceiverWithContext, P>,
+pub struct ReceiverWithContext(
+    payjoin::receive::v2::Receiver<payjoin::receive::v2::ReceiverWithContext>,
 );
 
-impl<P> From<ReceiverWithContext<P>>
-    for payjoin::receive::v2::Receiver<payjoin::receive::v2::ReceiverWithContext, P>
+impl From<ReceiverWithContext>
+    for payjoin::receive::v2::Receiver<payjoin::receive::v2::ReceiverWithContext>
 {
-    fn from(value: ReceiverWithContext<P>) -> Self {
+    fn from(value: ReceiverWithContext) -> Self {
         value.0
     }
 }
 
-impl<P> From<payjoin::receive::v2::Receiver<payjoin::receive::v2::ReceiverWithContext, P>>
-    for ReceiverWithContext<P>
+impl From<payjoin::receive::v2::Receiver<payjoin::receive::v2::ReceiverWithContext>>
+    for ReceiverWithContext
 {
     fn from(
-        value: payjoin::receive::v2::Receiver<payjoin::receive::v2::ReceiverWithContext, P>,
+        value: payjoin::receive::v2::Receiver<payjoin::receive::v2::ReceiverWithContext>,
     ) -> Self {
         Self(value)
     }
 }
 
-impl<P> ReceiverWithContext<P>
-where
-    P: PersistedSession + Clone,
-    P::SessionEvent: From<payjoin::receive::v2::ReceiverSessionEvent>,
-{
+pub struct ReceiverWithContextTransition(
+    payjoin::persist::MaybeFatalTransitionWithNoResults<
+        payjoin::receive::v2::ReceiverSessionEvent,
+        payjoin::receive::v2::Receiver<payjoin::receive::v2::UncheckedProposal>,
+        payjoin::receive::v2::Receiver<payjoin::receive::v2::ReceiverWithContext>,
+        payjoin::receive::Error,
+    >,
+);
+
+pub struct ReceiverWithContextTransitionOutcome(
+    persist::OptionalTransitionOutcome<
+        payjoin::receive::v2::Receiver<payjoin::receive::v2::UncheckedProposal>,
+        payjoin::receive::v2::Receiver<payjoin::receive::v2::ReceiverWithContext>,
+    >,
+);
+
+impl ReceiverWithContextTransitionOutcome {
+    pub fn is_none(&self) -> bool {
+        self.0.is_none()
+    }
+
+    pub fn is_success(&self) -> bool {
+        self.0.is_success()
+    }
+
+    pub fn success(&self) -> Option<UncheckedProposal> {
+        self.0.success().map(|r| r.clone().into())
+    }
+}
+
+impl ReceiverWithContextTransition {
+    pub fn save<P>(
+        self,
+        persister: &P,
+    ) -> Result<ReceiverWithContextTransitionOutcome, ImplementationError>
+    where
+        P: SessionPersister<SessionEvent = payjoin::receive::v2::ReceiverSessionEvent>,
+    {
+        let res = self.0.save(persister).map_err(|e| ImplementationError::from(e.to_string()))?;
+        Ok(ReceiverWithContextTransitionOutcome(res))
+    }
+}
+impl ReceiverWithContext {
     pub fn extract_req(&self, ohttp_relay: String) -> Result<(Request, ClientResponse), Error> {
         self.0
             .clone()
@@ -166,15 +208,12 @@ where
     }
 
     pub fn process_res(
+        // TODO: this should consume self
         &self,
         body: &[u8],
         context: &ClientResponse,
-    ) -> Result<Option<UncheckedProposal<P>>, Error> {
-        self.0
-            .clone()
-            .process_res(body, context.into())
-            .map(|e| e.map(|o| o.into()))
-            .map_err(Into::into)
+    ) -> ReceiverWithContextTransition {
+        ReceiverWithContextTransition(self.0.clone().process_res(body, context.into()))
     }
 
     pub fn pj_uri(&self) -> crate::PjUri {
@@ -183,33 +222,54 @@ where
 }
 
 #[derive(Clone)]
-pub struct UncheckedProposal<P>(
-    payjoin::receive::v2::Receiver<payjoin::receive::v2::UncheckedProposal, P>,
+pub struct UncheckedProposal(
+    payjoin::receive::v2::Receiver<payjoin::receive::v2::UncheckedProposal>,
 );
 
-impl<P> From<UncheckedProposal<P>>
-    for payjoin::receive::v2::Receiver<payjoin::receive::v2::UncheckedProposal, P>
+impl From<UncheckedProposal>
+    for payjoin::receive::v2::Receiver<payjoin::receive::v2::UncheckedProposal>
 {
-    fn from(value: UncheckedProposal<P>) -> Self {
+    fn from(value: UncheckedProposal) -> Self {
         value.0
     }
 }
 
-impl<P> From<payjoin::receive::v2::Receiver<payjoin::receive::v2::UncheckedProposal, P>>
-    for UncheckedProposal<P>
+impl From<payjoin::receive::v2::Receiver<payjoin::receive::v2::UncheckedProposal>>
+    for UncheckedProposal
 {
     fn from(
-        value: payjoin::receive::v2::Receiver<payjoin::receive::v2::UncheckedProposal, P>,
+        value: payjoin::receive::v2::Receiver<payjoin::receive::v2::UncheckedProposal>,
     ) -> Self {
         Self(value)
     }
 }
 
-impl<P> UncheckedProposal<P>
-where
-    P: PersistedSession + Clone,
-    P::SessionEvent: From<payjoin::receive::v2::ReceiverSessionEvent>,
-{
+pub struct UncheckedProposalTransition(
+    MaybeFatalTransition<
+        payjoin::receive::v2::ReceiverSessionEvent,
+        payjoin::receive::v2::Receiver<payjoin::receive::v2::MaybeInputsOwned>,
+        payjoin::receive::ReplyableError,
+    >,
+);
+
+impl UncheckedProposalTransition {
+    pub fn save<P>(self, persister: &P) -> Result<MaybeInputsOwned, ImplementationError>
+    where
+        P: SessionPersister<SessionEvent = payjoin::receive::v2::ReceiverSessionEvent>,
+    {
+        let res = self.0.save(persister).map_err(|e| ImplementationError::from(e.to_string()))?;
+        Ok(res.into())
+    }
+}
+
+pub struct AssumeInteractiveTransition(
+    NextStateTransition<
+        payjoin::receive::v2::ReceiverSessionEvent,
+        payjoin::receive::v2::Receiver<payjoin::receive::v2::MaybeInputsOwned>,
+    >,
+);
+
+impl UncheckedProposal {
     ///The Sender’s Original PSBT
     pub fn extract_tx_to_schedule_broadcast(&self) -> Vec<u8> {
         payjoin::bitcoin::consensus::encode::serialize(
@@ -221,17 +281,13 @@ where
         &self,
         min_fee_rate: Option<u64>,
         can_broadcast: impl Fn(&Vec<u8>) -> Result<bool, ImplementationError>,
-    ) -> Result<MaybeInputsOwned<P>, ReplyableError> {
-        self.0
-            .clone()
-            .check_broadcast_suitability(
-                min_fee_rate.map(FeeRate::from_sat_per_kwu),
-                |transaction| {
-                    Ok(can_broadcast(&payjoin::bitcoin::consensus::encode::serialize(transaction))?)
-                },
-            )
-            .map(Into::into)
-            .map_err(Into::into)
+    ) -> UncheckedProposalTransition {
+        UncheckedProposalTransition(self.0.clone().check_broadcast_suitability(
+            min_fee_rate.map(FeeRate::from_sat_per_kwu),
+            |transaction| {
+                Ok(can_broadcast(&payjoin::bitcoin::consensus::encode::serialize(transaction))?)
+            },
+        ))
     }
 
     /// Call this method if the only way to initiate a Payjoin with this receiver
@@ -239,8 +295,8 @@ where
     ///
     /// So-called "non-interactive" receivers, like payment processors, that allow arbitrary requests are otherwise vulnerable to probing attacks.
     /// Those receivers call `extract_tx_to_check_broadcast()` and `attest_tested_and_scheduled_broadcast()` after making those checks downstream.
-    pub fn assume_interactive_receiver(&self) -> MaybeInputsOwned<P> {
-        self.0.clone().assume_interactive_receiver().into()
+    pub fn assume_interactive_receiver(&self) -> AssumeInteractiveTransition {
+        AssumeInteractiveTransition(self.0.clone().assume_interactive_receiver())
     }
 
     /// Extract an OHTTP Encapsulated HTTP POST request to return
@@ -268,82 +324,100 @@ where
     }
 }
 #[derive(Clone)]
-pub struct MaybeInputsOwned<P>(
-    payjoin::receive::v2::Receiver<payjoin::receive::v2::MaybeInputsOwned, P>,
-);
+pub struct MaybeInputsOwned(payjoin::receive::v2::Receiver<payjoin::receive::v2::MaybeInputsOwned>);
 
-impl<P> From<payjoin::receive::v2::Receiver<payjoin::receive::v2::MaybeInputsOwned, P>>
-    for MaybeInputsOwned<P>
+impl From<payjoin::receive::v2::Receiver<payjoin::receive::v2::MaybeInputsOwned>>
+    for MaybeInputsOwned
 {
-    fn from(
-        value: payjoin::receive::v2::Receiver<payjoin::receive::v2::MaybeInputsOwned, P>,
-    ) -> Self {
+    fn from(value: payjoin::receive::v2::Receiver<payjoin::receive::v2::MaybeInputsOwned>) -> Self {
         Self(value)
     }
 }
 
-impl<P> From<MaybeInputsOwned<P>>
-    for payjoin::receive::v2::Receiver<payjoin::receive::v2::MaybeInputsOwned, P>
+impl From<MaybeInputsOwned>
+    for payjoin::receive::v2::Receiver<payjoin::receive::v2::MaybeInputsOwned>
 {
-    fn from(value: MaybeInputsOwned<P>) -> Self {
+    fn from(value: MaybeInputsOwned) -> Self {
         value.0
     }
 }
 
-impl<P> MaybeInputsOwned<P>
-where
-    P: PersistedSession + Clone,
-    P::SessionEvent: From<payjoin::receive::v2::ReceiverSessionEvent>,
-{
+pub struct MaybeInputsOwnedTransition(
+    MaybeFatalTransition<
+        payjoin::receive::v2::ReceiverSessionEvent,
+        payjoin::receive::v2::Receiver<payjoin::receive::v2::MaybeInputsSeen>,
+        payjoin::receive::ReplyableError,
+    >,
+);
+
+impl MaybeInputsOwnedTransition {
+    pub fn save<P>(self, persister: &P) -> Result<MaybeInputsSeen, ImplementationError>
+    where
+        P: SessionPersister<SessionEvent = payjoin::receive::v2::ReceiverSessionEvent>,
+    {
+        let res = self.0.save(persister).map_err(|e| ImplementationError::from(e.to_string()))?;
+        Ok(res.into())
+    }
+}
+
+impl MaybeInputsOwned {
     pub fn check_inputs_not_owned(
         &self,
         is_owned: impl Fn(&Vec<u8>) -> Result<bool, ImplementationError>,
-    ) -> Result<MaybeInputsSeen<P>, ReplyableError> {
-        self.0
-            .clone()
-            .check_inputs_not_owned(|input| Ok(is_owned(&input.to_bytes())?))
-            .map_err(Into::into)
-            .map(Into::into)
+    ) -> MaybeInputsOwnedTransition {
+        MaybeInputsOwnedTransition(
+            self.0.clone().check_inputs_not_owned(|input| Ok(is_owned(&input.to_bytes())?)),
+        )
     }
 }
 
 #[derive(Clone)]
-pub struct MaybeInputsSeen<P>(
-    payjoin::receive::v2::Receiver<payjoin::receive::v2::MaybeInputsSeen, P>,
-);
+pub struct MaybeInputsSeen(payjoin::receive::v2::Receiver<payjoin::receive::v2::MaybeInputsSeen>);
 
-impl<P> From<payjoin::receive::v2::Receiver<payjoin::receive::v2::MaybeInputsSeen, P>>
-    for MaybeInputsSeen<P>
+impl From<payjoin::receive::v2::Receiver<payjoin::receive::v2::MaybeInputsSeen>>
+    for MaybeInputsSeen
 {
-    fn from(
-        value: payjoin::receive::v2::Receiver<payjoin::receive::v2::MaybeInputsSeen, P>,
-    ) -> Self {
+    fn from(value: payjoin::receive::v2::Receiver<payjoin::receive::v2::MaybeInputsSeen>) -> Self {
         Self(value)
     }
 }
 
-impl<P> From<MaybeInputsSeen<P>>
-    for payjoin::receive::v2::Receiver<payjoin::receive::v2::MaybeInputsSeen, P>
+impl From<MaybeInputsSeen>
+    for payjoin::receive::v2::Receiver<payjoin::receive::v2::MaybeInputsSeen>
 {
-    fn from(value: MaybeInputsSeen<P>) -> Self {
+    fn from(value: MaybeInputsSeen) -> Self {
         value.0
     }
 }
 
-impl<P> MaybeInputsSeen<P>
-where
-    P: PersistedSession + Clone,
-    P::SessionEvent: From<payjoin::receive::v2::ReceiverSessionEvent>,
-{
+pub struct MaybeInputsSeenTransition(
+    MaybeFatalTransition<
+        payjoin::receive::v2::ReceiverSessionEvent,
+        payjoin::receive::v2::Receiver<payjoin::receive::v2::OutputsUnknown>,
+        payjoin::receive::ReplyableError,
+    >,
+);
+
+impl MaybeInputsSeenTransition {
+    pub fn save<P>(self, persister: &P) -> Result<OutputsUnknown, ImplementationError>
+    where
+        P: SessionPersister<SessionEvent = payjoin::receive::v2::ReceiverSessionEvent>,
+    {
+        let res = self.0.save(persister).map_err(|e| ImplementationError::from(e.to_string()))?;
+        Ok(res.into())
+    }
+}
+
+impl MaybeInputsSeen {
     pub fn check_no_inputs_seen_before(
         &self,
         is_known: impl Fn(&OutPoint) -> Result<bool, ImplementationError>,
-    ) -> Result<OutputsUnknown<P>, ReplyableError> {
-        self.0
-            .clone()
-            .check_no_inputs_seen_before(|outpoint| Ok(is_known(&(*outpoint).into())?))
-            .map_err(Into::into)
-            .map(Into::into)
+    ) -> MaybeInputsSeenTransition {
+        MaybeInputsSeenTransition(
+            self.0
+                .clone()
+                .check_no_inputs_seen_before(|outpoint| Ok(is_known(&(*outpoint).into())?)),
+        )
     }
 }
 
@@ -352,69 +426,84 @@ where
 /// Only accept PSBTs that send us money.
 /// Identify those outputs with `identify_receiver_outputs()` to proceed
 #[derive(Clone)]
-pub struct OutputsUnknown<P>(
-    payjoin::receive::v2::Receiver<payjoin::receive::v2::OutputsUnknown, P>,
-);
+pub struct OutputsUnknown(payjoin::receive::v2::Receiver<payjoin::receive::v2::OutputsUnknown>);
 
-impl<P> From<payjoin::receive::v2::Receiver<payjoin::receive::v2::OutputsUnknown, P>>
-    for OutputsUnknown<P>
-{
-    fn from(
-        value: payjoin::receive::v2::Receiver<payjoin::receive::v2::OutputsUnknown, P>,
-    ) -> Self {
+impl From<payjoin::receive::v2::Receiver<payjoin::receive::v2::OutputsUnknown>> for OutputsUnknown {
+    fn from(value: payjoin::receive::v2::Receiver<payjoin::receive::v2::OutputsUnknown>) -> Self {
         Self(value)
     }
 }
 
-impl<P> From<OutputsUnknown<P>>
-    for payjoin::receive::v2::Receiver<payjoin::receive::v2::OutputsUnknown, P>
-{
-    fn from(value: OutputsUnknown<P>) -> Self {
+impl From<OutputsUnknown> for payjoin::receive::v2::Receiver<payjoin::receive::v2::OutputsUnknown> {
+    fn from(value: OutputsUnknown) -> Self {
         value.0
     }
 }
 
-impl<P> OutputsUnknown<P>
-where
-    P: PersistedSession + Clone,
-    P::SessionEvent: From<payjoin::receive::v2::ReceiverSessionEvent>,
-{
+pub struct OutputsUnknownTransition(
+    MaybeFatalTransition<
+        payjoin::receive::v2::ReceiverSessionEvent,
+        payjoin::receive::v2::Receiver<payjoin::receive::v2::WantsOutputs>,
+        payjoin::receive::ReplyableError,
+    >,
+);
+
+impl OutputsUnknownTransition {
+    pub fn save<P>(self, persister: &P) -> Result<WantsOutputs, ImplementationError>
+    where
+        P: SessionPersister<SessionEvent = payjoin::receive::v2::ReceiverSessionEvent>,
+    {
+        let res = self.0.save(persister).map_err(|e| ImplementationError::from(e.to_string()))?;
+        Ok(res.into())
+    }
+}
+
+impl OutputsUnknown {
     /// Find which outputs belong to the receiver
     pub fn identify_receiver_outputs(
         &self,
         is_receiver_output: impl Fn(&Vec<u8>) -> Result<bool, ImplementationError>,
-    ) -> Result<WantsOutputs<P>, ReplyableError> {
-        self.0
-            .clone()
-            .identify_receiver_outputs(|input| Ok(is_receiver_output(&input.to_bytes())?))
-            .map_err(Into::into)
-            .map(Into::into)
+    ) -> OutputsUnknownTransition {
+        OutputsUnknownTransition(
+            self.0
+                .clone()
+                .identify_receiver_outputs(|input| Ok(is_receiver_output(&input.to_bytes())?)),
+        )
     }
 }
 
-pub struct WantsOutputs<P>(payjoin::receive::v2::Receiver<payjoin::receive::v2::WantsOutputs, P>);
+pub struct WantsOutputs(payjoin::receive::v2::Receiver<payjoin::receive::v2::WantsOutputs>);
 
-impl<P> From<payjoin::receive::v2::Receiver<payjoin::receive::v2::WantsOutputs, P>>
-    for WantsOutputs<P>
-{
-    fn from(value: payjoin::receive::v2::Receiver<payjoin::receive::v2::WantsOutputs, P>) -> Self {
+impl From<payjoin::receive::v2::Receiver<payjoin::receive::v2::WantsOutputs>> for WantsOutputs {
+    fn from(value: payjoin::receive::v2::Receiver<payjoin::receive::v2::WantsOutputs>) -> Self {
         Self(value)
     }
 }
 
-impl<P> From<WantsOutputs<P>>
-    for payjoin::receive::v2::Receiver<payjoin::receive::v2::WantsOutputs, P>
-{
-    fn from(value: WantsOutputs<P>) -> Self {
+impl From<WantsOutputs> for payjoin::receive::v2::Receiver<payjoin::receive::v2::WantsOutputs> {
+    fn from(value: WantsOutputs) -> Self {
         value.0
     }
 }
 
-impl<P> WantsOutputs<P>
-where
-    P: PersistedSession + Clone,
-    P::SessionEvent: From<payjoin::receive::v2::ReceiverSessionEvent>,
-{
+pub struct WantsOutputsTransition(
+    payjoin::persist::NextStateTransition<
+        payjoin::receive::v2::ReceiverSessionEvent,
+        payjoin::receive::v2::Receiver<payjoin::receive::v2::WantsInputs>,
+    >,
+);
+
+impl WantsOutputsTransition {
+    pub fn save<P>(self, persister: &P) -> Result<WantsInputs, ImplementationError>
+    where
+        P: SessionPersister<SessionEvent = payjoin::receive::v2::ReceiverSessionEvent>,
+    {
+        let res = self.0.save(persister).map_err(|e| ImplementationError::from(e.to_string()))?;
+        Ok(res.into())
+    }
+}
+
+impl WantsOutputs {
     pub fn output_substitution(&self) -> OutputSubstitution {
         self.0.output_substitution()
     }
@@ -423,7 +512,7 @@ where
         &self,
         replacement_outputs: Vec<TxOut>,
         drain_script: &Script,
-    ) -> Result<WantsOutputs<P>, OutputSubstitutionError> {
+    ) -> Result<WantsOutputs, OutputSubstitutionError> {
         let replacement_outputs: Vec<payjoin::bitcoin::TxOut> =
             replacement_outputs.iter().map(|o| o.clone().into()).collect();
         self.0
@@ -436,7 +525,7 @@ where
     pub fn substitute_receiver_script(
         &self,
         output_script: &Script,
-    ) -> Result<WantsOutputs<P>, OutputSubstitutionError> {
+    ) -> Result<WantsOutputs, OutputSubstitutionError> {
         self.0
             .clone()
             .substitute_receiver_script(&output_script.0)
@@ -444,34 +533,43 @@ where
             .map_err(Into::into)
     }
 
-    pub fn commit_outputs(&self) -> WantsInputs<P> {
-        self.0.clone().commit_outputs().into()
+    pub fn commit_outputs(&self) -> WantsOutputsTransition {
+        WantsOutputsTransition(self.0.clone().commit_outputs())
     }
 }
 
-pub struct WantsInputs<P>(payjoin::receive::v2::Receiver<payjoin::receive::v2::WantsInputs, P>);
+pub struct WantsInputs(payjoin::receive::v2::Receiver<payjoin::receive::v2::WantsInputs>);
 
-impl<P> From<payjoin::receive::v2::Receiver<payjoin::receive::v2::WantsInputs, P>>
-    for WantsInputs<P>
-{
-    fn from(value: payjoin::receive::v2::Receiver<payjoin::receive::v2::WantsInputs, P>) -> Self {
+impl From<payjoin::receive::v2::Receiver<payjoin::receive::v2::WantsInputs>> for WantsInputs {
+    fn from(value: payjoin::receive::v2::Receiver<payjoin::receive::v2::WantsInputs>) -> Self {
         Self(value)
     }
 }
 
-impl<P> From<WantsInputs<P>>
-    for payjoin::receive::v2::Receiver<payjoin::receive::v2::WantsInputs, P>
-{
-    fn from(value: WantsInputs<P>) -> Self {
+impl From<WantsInputs> for payjoin::receive::v2::Receiver<payjoin::receive::v2::WantsInputs> {
+    fn from(value: WantsInputs) -> Self {
         value.0
     }
 }
 
-impl<P> WantsInputs<P>
-where
-    P: PersistedSession + Clone,
-    P::SessionEvent: From<payjoin::receive::v2::ReceiverSessionEvent>,
-{
+pub struct WantsInputsTransition(
+    payjoin::persist::NextStateTransition<
+        payjoin::receive::v2::ReceiverSessionEvent,
+        payjoin::receive::v2::Receiver<payjoin::receive::v2::ProvisionalProposal>,
+    >,
+);
+
+impl WantsInputsTransition {
+    pub fn save<P>(self, persister: &P) -> Result<ProvisionalProposal, ImplementationError>
+    where
+        P: SessionPersister<SessionEvent = payjoin::receive::v2::ReceiverSessionEvent>,
+    {
+        let res = self.0.save(persister).map_err(|e| ImplementationError::from(e.to_string()))?;
+        Ok(res.into())
+    }
+}
+
+impl WantsInputs {
     /// Select receiver input such that the payjoin avoids surveillance.
     /// Return the input chosen that has been applied to the Proposal.
     ///
@@ -496,7 +594,7 @@ where
     pub fn contribute_inputs(
         &self,
         replacement_inputs: Vec<InputPair>,
-    ) -> Result<WantsInputs<P>, InputContributionError> {
+    ) -> Result<WantsInputs, InputContributionError> {
         self.0
             .clone()
             .contribute_inputs(replacement_inputs.into_iter().map(Into::into))
@@ -504,8 +602,8 @@ where
             .map_err(Into::into)
     }
 
-    pub fn commit_inputs(&self) -> ProvisionalProposal<P> {
-        self.0.clone().commit_inputs().into()
+    pub fn commit_inputs(&self) -> WantsInputsTransition {
+        WantsInputsTransition(self.0.clone().commit_inputs())
     }
 }
 
@@ -536,82 +634,98 @@ impl From<payjoin::receive::InputPair> for InputPair {
     }
 }
 
-pub struct ProvisionalProposal<P>(
-    payjoin::receive::v2::Receiver<payjoin::receive::v2::ProvisionalProposal, P>,
+pub struct ProvisionalProposal(
+    payjoin::receive::v2::Receiver<payjoin::receive::v2::ProvisionalProposal>,
 );
 
-impl<P> From<payjoin::receive::v2::Receiver<payjoin::receive::v2::ProvisionalProposal, P>>
-    for ProvisionalProposal<P>
+impl From<payjoin::receive::v2::Receiver<payjoin::receive::v2::ProvisionalProposal>>
+    for ProvisionalProposal
 {
     fn from(
-        value: payjoin::receive::v2::Receiver<payjoin::receive::v2::ProvisionalProposal, P>,
+        value: payjoin::receive::v2::Receiver<payjoin::receive::v2::ProvisionalProposal>,
     ) -> Self {
         Self(value)
     }
 }
 
-impl<P> From<ProvisionalProposal<P>>
-    for payjoin::receive::v2::Receiver<payjoin::receive::v2::ProvisionalProposal, P>
+impl From<ProvisionalProposal>
+    for payjoin::receive::v2::Receiver<payjoin::receive::v2::ProvisionalProposal>
 {
-    fn from(value: ProvisionalProposal<P>) -> Self {
+    fn from(value: ProvisionalProposal) -> Self {
         value.0
     }
 }
 
-impl<P> ProvisionalProposal<P>
-where
-    P: PersistedSession + Clone,
-    P::SessionEvent: From<payjoin::receive::v2::ReceiverSessionEvent>,
-{
+pub struct ProvisionalProposalTransition(
+    payjoin::persist::MaybeTransientTransition<
+        payjoin::receive::v2::ReceiverSessionEvent,
+        payjoin::receive::v2::Receiver<payjoin::receive::v2::PayjoinProposal>,
+        payjoin::receive::ReplyableError,
+    >,
+);
+
+impl ProvisionalProposalTransition {
+    pub fn save<P>(self, persister: &P) -> Result<PayjoinProposal, ImplementationError>
+    where
+        P: SessionPersister<SessionEvent = payjoin::receive::v2::ReceiverSessionEvent>,
+    {
+        let res = self.0.save(persister).map_err(|e| ImplementationError::from(e.to_string()))?;
+        Ok(res.into())
+    }
+}
+
+impl ProvisionalProposal {
     pub fn finalize_proposal(
         &self,
         process_psbt: impl Fn(String) -> Result<String, ImplementationError>,
         min_feerate_sat_per_vb: Option<u64>,
         max_effective_fee_rate_sat_per_vb: Option<u64>,
-    ) -> Result<PayjoinProposal<P>, ReplyableError> {
-        self.0
-            .clone()
-            .finalize_proposal(
-                |pre_processed| {
-                    let psbt = process_psbt(pre_processed.to_string())?;
-                    Ok(Psbt::from_str(&psbt)?)
-                },
-                min_feerate_sat_per_vb.and_then(FeeRate::from_sat_per_vb),
-                max_effective_fee_rate_sat_per_vb.and_then(FeeRate::from_sat_per_vb),
-            )
-            .map(Into::into)
-            .map_err(Into::into)
+    ) -> ProvisionalProposalTransition {
+        ProvisionalProposalTransition(self.0.clone().finalize_proposal(
+            |pre_processed| {
+                let psbt = process_psbt(pre_processed.to_string())?;
+                Ok(Psbt::from_str(&psbt)?)
+            },
+            min_feerate_sat_per_vb.and_then(FeeRate::from_sat_per_vb),
+            max_effective_fee_rate_sat_per_vb.and_then(FeeRate::from_sat_per_vb),
+        ))
     }
 }
 
 #[derive(Clone)]
-pub struct PayjoinProposal<P>(
-    payjoin::receive::v2::Receiver<payjoin::receive::v2::PayjoinProposal, P>,
-);
+pub struct PayjoinProposal(payjoin::receive::v2::Receiver<payjoin::receive::v2::PayjoinProposal>);
 
-impl<P> From<payjoin::receive::v2::Receiver<payjoin::receive::v2::PayjoinProposal, P>>
-    for PayjoinProposal<P>
+impl From<payjoin::receive::v2::Receiver<payjoin::receive::v2::PayjoinProposal>>
+    for PayjoinProposal
 {
-    fn from(
-        value: payjoin::receive::v2::Receiver<payjoin::receive::v2::PayjoinProposal, P>,
-    ) -> Self {
+    fn from(value: payjoin::receive::v2::Receiver<payjoin::receive::v2::PayjoinProposal>) -> Self {
         Self(value)
     }
 }
 
-impl<P> From<PayjoinProposal<P>>
-    for payjoin::receive::v2::Receiver<payjoin::receive::v2::PayjoinProposal, P>
+impl From<PayjoinProposal>
+    for payjoin::receive::v2::Receiver<payjoin::receive::v2::PayjoinProposal>
 {
-    fn from(value: PayjoinProposal<P>) -> Self {
+    fn from(value: PayjoinProposal) -> Self {
         value.0
     }
 }
 
-impl<P> PayjoinProposal<P>
-where
-    P: PersistedSession + Clone,
-    P::SessionEvent: From<payjoin::receive::v2::ReceiverSessionEvent>,
-{
+pub struct PayjoinProposalTransition(
+    payjoin::persist::MaybeSuccessTransition<(), payjoin::receive::Error>,
+);
+
+impl PayjoinProposalTransition {
+    pub fn save<P>(self, persister: &P) -> Result<(), ImplementationError>
+    where
+        P: SessionPersister<SessionEvent = payjoin::receive::v2::ReceiverSessionEvent>,
+    {
+        self.0.save(persister).map_err(|e| ImplementationError::from(e.to_string()))?;
+        Ok(())
+    }
+}
+
+impl PayjoinProposal {
     pub fn utxos_to_be_locked(&self) -> Vec<OutPoint> {
         let mut outpoints: Vec<OutPoint> = Vec::new();
         for o in self.0.clone().utxos_to_be_locked() {
@@ -638,8 +752,12 @@ where
     /// This function decapsulates the response using the provided OHTTP context. If the response status is successful, it indicates that the Payjoin proposal has been accepted. Otherwise, it returns an error with the status code.
     ///
     /// After this function is called, the receiver can either wait for the Payjoin transaction to be broadcast or choose to broadcast the original PSBT.
-    pub fn process_res(&self, body: &[u8], ohttp_context: &ClientResponse) -> Result<(), Error> {
-        self.0.clone().process_res(body, ohttp_context.into()).map_err(|e| e.into())
+    pub fn process_res(
+        &self,
+        body: &[u8],
+        ohttp_context: &ClientResponse,
+    ) -> PayjoinProposalTransition {
+        PayjoinProposalTransition(self.0.clone().process_res(body, ohttp_context.into()))
     }
 }
 

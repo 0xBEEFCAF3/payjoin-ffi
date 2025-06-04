@@ -60,36 +60,6 @@ rpc_port = os.environ.get("RPC_PORT", "18443")
 # cookie_path = os.path.expanduser(os.path.join(rpc_data_dir, ".cookie"))
 # rpc_user, rpc_password = get_rpc_credentials_from_cookie(cookie_path)
 
-# class InMemoryReceiverPersister(payjoin_ffi.ReceiverPersister):
-#     def __init__(self):
-#         super().__init__()
-#         self.receivers = {}
-
-#     def save(self, receiver: Receiver) -> ReceiverToken:
-#         self.receivers[receiver.key().as_string()] = receiver.to_json()
-
-#         return receiver.key()
-
-#     def load(self, token: ReceiverToken) -> Receiver:
-#         token = token.as_string()
-#         if token not in self.receivers.keys():
-#             raise ValueError(f"Token not found: {token}")
-#         return Receiver.from_json(self.receivers[token])
-
-# class InMemorySenderPersister(payjoin_ffi.SenderPersister):
-#     def __init__(self):
-#         super().__init__()
-#         self.senders = {}
-
-#     def save(self, sender: Sender) -> SenderToken:
-#         self.senders[sender.key().as_string()] = sender.to_json()
-#         return sender.key()
-
-#     def load(self, token: SenderToken) -> Sender:
-#         token = token.as_string()
-#         if token not in self.senders.keys():
-#             raise ValueError(f"Token not found: {token}")
-#         return Sender.from_json(self.senders[token])
 class ReceieverSessionEventLog(JsonReceiverPersistedSession):
     def __init__(self, id):
         self.id = id
@@ -98,6 +68,7 @@ class ReceieverSessionEventLog(JsonReceiverPersistedSession):
 
     # Str representation of the event
     def save(self, event: str):
+        print(f"Saving event: {event}")
         self.events.append(event)
 
     def load(self):
@@ -125,56 +96,44 @@ class TestPayjoin(unittest.IsolatedAsyncioTestCase):
         create_and_load_wallet(cls.receiver, receiver_wallet_name)
         cls.receiver.generatetoaddress(101, cls.receiver.getnewaddress())
  
-    async def process_receiver_proposal(self, receiver: UniReceiverState) -> Optional[UniReceiverState]:
+    async def process_receiver_proposal(self, receiver: UniReceiverState, recv_persister: ReceieverSessionEventLog) -> Optional[UniReceiverState]:
         if receiver.is_WITH_CONTEXT():
-            res = await self.retrieve_receiver_proposal(receiver.inner)
+            res = await self.retrieve_receiver_proposal(receiver.inner, recv_persister)
             print(f"Retrieved receiver proposal: {res}")
-            if not isinstance(res, UniReceiverState.UNCHECKED_PROPOSAL):
-                return None
-            return await self.process_receiver_proposal(res)
+            return None
+            # if not isinstance(res, UniReceiverState.UNCHECKED_PROPOSAL):
+            # return await self.process_receiver_proposal(res, recv_persister)
         
         if receiver.is_UNCHECKED_PROPOSAL():
-            res = await self.process_unchecked_proposal(receiver.inner)
-            return await self.process_receiver_proposal(res)
-        
+            return await self.process_unchecked_proposal(receiver.inner, recv_persister)
         if receiver.is_MAYBE_INPUTS_OWNED():
-            res = await self.process_maybe_inputs_owned(receiver.inner)
-            return await self.process_receiver_proposal(res)
-        
+            return await self.process_maybe_inputs_owned(receiver.inner, recv_persister)
         if receiver.is_MAYBE_INPUTS_SEEN():
-            res = await self.process_maybe_inputs_seen(receiver.inner)
-            return await self.process_receiver_proposal(res)
-        
+            return await self.process_maybe_inputs_seen(receiver.inner, recv_persister)
         if receiver.is_OUTPUTS_UNKNOWN():
-            res = await self.process_outputs_unknown(receiver.inner)
-            return await self.process_receiver_proposal(res)
-        
+            return await self.process_outputs_unknown(receiver.inner, recv_persister)
         if receiver.is_WANTS_OUTPUTS():
-            res = await self.process_wants_outputs(receiver.inner)
-            return await self.process_receiver_proposal(res)
-        
+            return await self.process_wants_outputs(receiver.inner, recv_persister)
         if receiver.is_WANTS_INPUTS():
-            res = await self.process_wants_inputs(receiver.inner)
-            return await self.process_receiver_proposal(res)
-        
+            return await self.process_wants_inputs(receiver.inner, recv_persister)
         if receiver.is_PROVISIONAL_PROPOSAL():
-            res = await self.process_provisional_proposal(receiver.inner)
-            return await self.process_receiver_proposal(res)
-        
+            return await self.process_provisional_proposal(receiver.inner, recv_persister)
         if receiver.is_PAYJOIN_PROPOSAL():
             return receiver
         
         raise Exception(f"Unknown receiver state: {receiver}")
             
             
-    def create_receiver_context(self, receiver_address: bitcoinffi.Address, directory: Url, ohttp_keys: OhttpKeys, recv_persister: ReceieverSessionEventLog):
-        receiver = UninitializedReceiver().create_session(address=receiver_address, directory=directory.as_string(), ohttp_keys=ohttp_keys, expire_after=None, persister=recv_persister)
+    def create_receiver_context(self, receiver_address: bitcoinffi.Address, directory: Url, ohttp_keys: OhttpKeys, recv_persister: ReceieverSessionEventLog) -> ReceiverWithContext:
+        transition_obj = UninitializedReceiver().create_session(address=receiver_address, directory=directory.as_string(), ohttp_keys=ohttp_keys, expire_after=None)
+        print(f"transition_obj ref count: {sys.getrefcount(transition_obj)}")  # Debug reference count
+        receiver = transition_obj.save(recv_persister)
         pj_uri = receiver.pj_uri()
         print(f"pj_uri: {pj_uri.as_string()}")
         
-        return UniReceiverState.WITH_CONTEXT(receiver)
+        return receiver
     
-    async def retrieve_receiver_proposal(self, receiver: ReceiverWithContext):
+    async def retrieve_receiver_proposal(self, receiver: ReceiverWithContext, recv_persister: ReceieverSessionEventLog):
         agent = httpx.AsyncClient()
         request: RequestResponse = receiver.extract_req(self.ohttp_relay.as_string())
         response = await agent.post(
@@ -182,37 +141,38 @@ class TestPayjoin(unittest.IsolatedAsyncioTestCase):
             headers={"Content-Type": request.request.content_type},
             content=request.request.body
         )
-        res = receiver.process_res(response.content, request.client_response)
-        if res == None:
+        res = receiver.process_res(response.content, request.client_response).save(recv_persister)
+        if res.is_none():
             return None
-        return UniReceiverState.UNCHECKED_PROPOSAL(res)
+        proposal = res.success()
+        return await self.process_unchecked_proposal(proposal, recv_persister)
     
-    async def process_unchecked_proposal(self, proposal: UncheckedProposal) -> UniReceiverState:
-        receiver = proposal.check_broadcast_suitability(None, MempoolAcceptanceCallback(self.receiver))
-        return UniReceiverState.MAYBE_INPUTS_OWNED(receiver)
+    async def process_unchecked_proposal(self, proposal: UncheckedProposal, recv_persister: ReceieverSessionEventLog) :
+        receiver = proposal.check_broadcast_suitability(None, MempoolAcceptanceCallback(self.receiver)).save(recv_persister)
+        return await self.process_maybe_inputs_owned(receiver, recv_persister)
     
-    async def process_maybe_inputs_owned(self, proposal: MaybeInputsOwned) -> UniReceiverState:
-        maybe_inputs_owned = proposal.check_inputs_not_owned(IsScriptOwnedCallback(self.receiver))
-        return UniReceiverState.MAYBE_INPUTS_SEEN(maybe_inputs_owned)
+    async def process_maybe_inputs_owned(self, proposal: MaybeInputsOwned, recv_persister: ReceieverSessionEventLog):
+        maybe_inputs_owned = proposal.check_inputs_not_owned(IsScriptOwnedCallback(self.receiver)).save(recv_persister)
+        return await self.process_maybe_inputs_seen(maybe_inputs_owned, recv_persister)
     
-    async def process_maybe_inputs_seen(self, proposal: MaybeInputsSeen) -> UniReceiverState:
-        outputs_unknown = proposal.check_no_inputs_seen_before(IdentifyReceiverOutputsCallback(self.receiver))
-        return UniReceiverState.OUTPUTS_UNKNOWN(outputs_unknown)
+    async def process_maybe_inputs_seen(self, proposal: MaybeInputsSeen, recv_persister: ReceieverSessionEventLog):
+        outputs_unknown = proposal.check_no_inputs_seen_before(IdentifyReceiverOutputsCallback(self.receiver)).save(recv_persister)
+        return await self.process_outputs_unknown(outputs_unknown, recv_persister)
     
-    async def process_outputs_unknown(self, proposal: OutputsUnknown) -> UniReceiverState:
-        wants_outputs = proposal.identify_receiver_outputs(IsScriptOwnedCallback(self.receiver))
-        return UniReceiverState.WANTS_OUTPUTS(wants_outputs)
+    async def process_outputs_unknown(self, proposal: OutputsUnknown, recv_persister: ReceieverSessionEventLog):
+        wants_outputs = proposal.identify_receiver_outputs(IsScriptOwnedCallback(self.receiver)).save(recv_persister)
+        return await self.process_wants_outputs(wants_outputs, recv_persister)
     
-    async def process_wants_outputs(self, proposal: WantsOutputs) -> UniReceiverState:
-        wants_inputs = proposal.commit_outputs()
-        return UniReceiverState.WANTS_INPUTS(wants_inputs)
+    async def process_wants_outputs(self, proposal: WantsOutputs, recv_persister: ReceieverSessionEventLog):
+        wants_inputs = proposal.commit_outputs().save(recv_persister)
+        return await self.process_wants_inputs(wants_inputs, recv_persister)
     
-    async def process_wants_inputs(self, proposal: WantsInputs) -> UniReceiverState:
-        provisional_proposal = proposal.contribute_inputs(get_inputs(self.receiver)).commit_inputs()
-        return UniReceiverState.PROVISIONAL_PROPOSAL(provisional_proposal)
+    async def process_wants_inputs(self, proposal: WantsInputs, recv_persister: ReceieverSessionEventLog):
+        provisional_proposal = proposal.contribute_inputs(get_inputs(self.receiver)).commit_inputs().save(recv_persister)
+        return await self.process_provisional_proposal(provisional_proposal, recv_persister)
     
-    async def process_provisional_proposal(self, proposal: ProvisionalProposal) -> UniReceiverState:
-        payjoin_proposal = proposal.finalize_proposal(ProcessPsbtCallback(self.receiver), 1, 10)
+    async def process_provisional_proposal(self, proposal: ProvisionalProposal, recv_persister: ReceieverSessionEventLog):
+        payjoin_proposal = proposal.finalize_proposal(ProcessPsbtCallback(self.receiver), 1, 10).save(recv_persister)
         return UniReceiverState.PAYJOIN_PROPOSAL(payjoin_proposal)
     
     async def test_integration_v2_to_v2(self):
@@ -233,7 +193,7 @@ class TestPayjoin(unittest.IsolatedAsyncioTestCase):
             # Inside the Receiver:
             recv_persister = ReceieverSessionEventLog(1)
             receiver = self.create_receiver_context(receiver_address, directory, ohttp_keys, recv_persister)
-            response_body = await self.process_receiver_proposal(receiver)
+            response_body = await self.process_receiver_proposal(UniReceiverState.WITH_CONTEXT(receiver), recv_persister)
             # No proposal yet since sender has not responded
             self.assertIsNone(response_body)
             pj_uri = receiver.inner.pj_uri() 

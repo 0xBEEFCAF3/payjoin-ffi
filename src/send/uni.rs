@@ -47,8 +47,9 @@ impl SenderBuilder {
     // The minfeerate parameter is set if the contribution is available in change.
     //
     // This method fails if no recommendation can be made or if the PSBT is malformed.
-    pub fn build_recommended(&self, min_fee_rate: u64) -> Result<Arc<NewSender>, BuildSenderError> {
-        self.0.build_recommended(min_fee_rate).map(|e| Arc::new(e.into()))
+    pub fn build_recommended(&self, min_fee_rate: u64) -> Result<Arc<SenderWithReplyKey>, BuildSenderError> {
+        todo!()
+        // self.0.build_recommended(min_fee_rate).map(|e| Arc::new(e.into()))
     }
 
     /// Offer the receiver contribution to pay for his input.
@@ -70,15 +71,16 @@ impl SenderBuilder {
         change_index: Option<u8>,
         min_fee_rate: u64,
         clamp_fee_contribution: bool,
-    ) -> Result<Arc<NewSender>, BuildSenderError> {
-        self.0
-            .build_with_additional_fee(
-                max_fee_contribution,
-                change_index,
-                min_fee_rate,
-                clamp_fee_contribution,
-            )
-            .map(|e| Arc::new(e.into()))
+    ) -> Result<Arc<SenderWithReplyKey>, BuildSenderError> {
+        todo!()
+        // self.0
+        //     .build_with_additional_fee(
+        //         max_fee_contribution,
+        //         change_index,
+        //         min_fee_rate,
+        //         clamp_fee_contribution,
+        //     )
+        //     .map(|e| Arc::new(e.into()))
     }
     /// Perform Payjoin without incentivizing the payee to cooperate.
     ///
@@ -87,49 +89,29 @@ impl SenderBuilder {
     pub fn build_non_incentivizing(
         &self,
         min_fee_rate: u64,
-    ) -> Result<Arc<NewSender>, BuildSenderError> {
-        self.0.build_non_incentivizing(min_fee_rate).map(|e| Arc::new(e.into()))
-    }
-}
-
-#[derive(uniffi::Object)]
-pub struct NewSender(super::NewSender);
-
-impl From<super::NewSender> for NewSender {
-    fn from(value: super::NewSender) -> Self {
-        Self(value)
-    }
-}
-
-#[uniffi::export]
-impl NewSender {
-    pub fn persist(&self, persister: Arc<dyn SenderPersister>) -> Result<(), ImplementationError> {
-        let mut adapter = CallbackPersisterAdapter::new(persister);
-        self.0.persist(&mut adapter)
-    }
-
-    pub fn build(&self) -> Sender {
-        self.0.build().into()
+    ) -> Result<Arc<SenderWithReplyKey>, BuildSenderError> {
+        todo!()
+        // self.0.build_non_incentivizing(min_fee_rate).map(|e| Arc::new(e.into()))
     }
 }
 
 #[derive(Clone, uniffi::Object)]
-pub struct Sender(super::Sender);
+pub struct SenderWithReplyKey(super::SenderWithReplyKey);
 
-impl From<super::Sender> for Sender {
-    fn from(value: super::Sender) -> Self {
+impl From<super::SenderWithReplyKey> for SenderWithReplyKey {
+    fn from(value: super::SenderWithReplyKey) -> Self {
         Self(value)
     }
 }
 
-impl From<Sender> for super::Sender {
-    fn from(value: Sender) -> Self {
+impl From<SenderWithReplyKey> for super::SenderWithReplyKey {
+    fn from(value: SenderWithReplyKey) -> Self {
         value.0
     }
 }
 
 #[uniffi::export]
-impl Sender {
+impl SenderWithReplyKey {
     pub fn extract_v1(&self) -> RequestV1Context {
         let (req, ctx) = self.0.extract_v1();
         RequestV1Context { request: req, context: Arc::new(ctx.into()) }
@@ -157,7 +139,8 @@ impl Sender {
 
     #[uniffi::constructor]
     pub fn from_json(json: &str) -> Result<Self, SerdeJsonError> {
-        super::Sender::from_json(json).map(Into::into)
+        todo!()
+        // super::Sender::from_json(json).map(Into::into)
     }
 }
 
@@ -290,19 +273,19 @@ impl From<super::SenderSessionEvent> for UniSenderSessionEvent {
 }
 
 // Implement the Persister trait for the adapter
-impl payjoin::persist::PersistedSession for CallbackPersisterAdapter {
+impl payjoin::persist::SessionPersister for CallbackPersisterAdapter {
     type SessionEvent = super::SenderSessionEvent;
-    type Error = ForeignError; // Define the error type
+    type InternalStorageError = ForeignError; // Define the error type
 
-    fn save(&self, event: Self::SessionEvent) -> Result<(), Self::Error> {
+    fn save_event(&self, event: &Self::SessionEvent) -> Result<(), Self::InternalStorageError> {
         todo!("Implement save")
     }
 
-    fn close(&self) -> Result<(), Self::Error> {
+    fn close(&self) -> Result<(), Self::InternalStorageError> {
         todo!("Implement close")
     }
 
-    fn load(&self) -> Result<Box<dyn Iterator<Item = Self::SessionEvent>>, Self::Error> {
+    fn load(&self) -> Result<Box<dyn Iterator<Item = Self::SessionEvent>>, Self::InternalStorageError> {
         // self.callback_persister.load()
         todo!(
             "Implement conversion from Vec<SenderSessionEvent> back to Vec<UniSenderSessionEvent>"

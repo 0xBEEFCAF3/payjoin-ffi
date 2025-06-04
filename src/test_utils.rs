@@ -114,11 +114,12 @@ impl TestServices {
     }
 
     pub fn fetch_ohttp_keys(&self) -> Result<crate::OhttpKeys, crate::io::IoError> {
-        let runtime = RUNTIME.lock().unwrap();
-        runtime.block_on(async {
+        let runtime = RUNTIME.lock().expect("Lock should not be poisoned");
+        let res = runtime.block_on(async {
             let res = self.0.lock().await.fetch_ohttp_keys().await.unwrap();
-            Ok(res.into())
-        })
+            res
+        });
+        Ok(crate::OhttpKeys::from(res))
     }
 }
 

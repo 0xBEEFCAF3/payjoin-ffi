@@ -83,25 +83,13 @@ impl From<ReplyableError> for JsonReply {
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
-pub struct ImplementationError(#[from] receive::ImplementationError);
+pub struct ImplementationError(#[from] payjoin::ImplementationError);
 
 impl From<String> for ImplementationError {
     fn from(value: String) -> Self {
         Self(value.into())
     }
 }
-
-// impl From<receive::ImplementationError> for ImplementationError {
-//     fn from(value: receive::ImplementationError) -> Self {
-//         Self(value)
-//     }
-// }
-
-// impl From<ImplementationError> for receive::ImplementationError {
-//     fn from(value: ImplementationError) -> Self {
-//         value.0
-//     }
-// }
 
 /// Error that may occur during a v2 session typestate change
 #[derive(Debug, thiserror::Error)]
